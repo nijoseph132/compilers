@@ -74,42 +74,52 @@ public class ConstantFolder {
      * Expected outcome: e.g., 'ldc 2', 'ldc 3', 'iadd' → replaced with 'ldc 5'.
      */
     private boolean simpleFolding(InstructionList il, ConstantPoolGen cp) {
-        boolean changed = false;
-        InstructionFinder finder = new InstructionFinder(il);
-        String pattern = "PushInstruction PushInstruction ArithmeticInstruction";
+		boolean changed = false;
+		InstructionFinder finder = new InstructionFinder(il);
+		String pattern = "PushInstruction PushInstruction ArithmeticInstruction";
 
-        for (Iterator<?> it = finder.search(pattern); it.hasNext(); ) {
-            InstructionHandle[] match = (InstructionHandle[]) it.next();
-            Instruction i1 = match[0].getInstruction();
-            Instruction i2 = match[1].getInstruction();
-            Instruction op = match[2].getInstruction();
+		for (Iterator<?> it = finder.search(pattern); it.hasNext(); ) {
+			InstructionHandle[] match = (InstructionHandle[]) it.next();
+			Instruction i1 = match[0].getInstruction();
+			Instruction i2 = match[1].getInstruction();
+			Instruction op = match[2].getInstruction();
 
-            Number n1 = getValue(i1, cp);
-            Number n2 = getValue(i2, cp);
-            if (n1 == null || n2 == null) continue;
+			Number n1 = getValue(i1, cp);
+			Number n2 = getValue(i2, cp);
+			if (n1 == null || n2 == null) continue;
 
-            try {
-                Instruction replacement = fold(op, n1, n2, cp);
-                if (replacement == null) continue;
+			try {
+				Instruction replacement = fold(op, n1, n2, cp);
+				if (replacement == null) continue;
 
-                InstructionHandle newHandle = il.insert(match[0], replacement);
-                try {
-                    il.delete(match[0], match[2]);
-                } catch (TargetLostException e) {
-                    for (InstructionHandle lost : e.getTargets()) {
-                        for (InstructionTargeter t : lost.getTargeters()) {
-                            t.updateTarget(lost, newHandle);
-                        }
-                    }
-                }
+				InstructionHandle newHandle = il.insert(match[0], replacement);
 
-                changed = true;
-            } catch (ArithmeticException e) {
-                System.out.println("Division by zero skipped.");
-            }
-        }
-        return changed;
-    }
+				try {
+					il.delete(match[0]);
+				} catch (TargetLostException e) {
+					e.printStackTrace();
+				}
+
+				try {
+					il.delete(match[1]);
+				} catch (TargetLostException e) {
+					e.printStackTrace();
+				}
+
+				try {
+					il.delete(match[2]);
+				} catch (TargetLostException e) {
+					e.printStackTrace();
+				}
+
+				changed = true;
+			} catch (ArithmeticException e) {
+				System.out.println("Division by zero skipped.");
+			}
+		}
+		return changed;
+	}
+
 
     /**
      * Extracts constant values from supported instructions (ICONST, BIPUSH, SIPUSH, LDC, LDC2_W).
