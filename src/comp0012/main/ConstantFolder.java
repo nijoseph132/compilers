@@ -52,9 +52,7 @@ public class ConstantFolder
 
 			// Task 2 call
 			System.out.println("\n=== Method: " + method.getName() + " ===\n\n");
-			//constantVariables(il, cpgen);
-			Map<Integer, Object> constantVariables = constantFolding(il, cpgen);
-			System.out.println("Constant variables: " + constantVariables);
+			constantFolding(il, cpgen);
 
 			//Call your methods here
 
@@ -98,7 +96,7 @@ public class ConstantFolder
 		}
 	}
 
-	private Map<Integer, Object> constantFolding(InstructionList il, ConstantPoolGen cpgen) {
+	private void constantFolding(InstructionList il, ConstantPoolGen cpgen) {
 		Map<Integer, Object> constantVars = new HashMap<>();
 		Map<Integer, InstructionHandle> lastStore = new HashMap<>();
 
@@ -177,7 +175,9 @@ public class ConstantFolder
 				verifiedConstants.put(varIndex, entry.getValue());
 			}
 		}
-		return verifiedConstants;
+
+		// Finally, fold all found constants
+		System.out.println("Constant variables: " + verifiedConstants);
 	}
 
 	public void write(String optimisedFilePath)
