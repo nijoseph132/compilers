@@ -3,27 +3,20 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.Iterator;
+import java.util.Map;
 
 import org.apache.bcel.classfile.ClassParser;
-import org.apache.bcel.classfile.Code;
+import org.apache.bcel.classfile.Constant;
+import org.apache.bcel.classfile.ConstantDouble;
+import org.apache.bcel.classfile.ConstantFloat;
+import org.apache.bcel.classfile.ConstantInteger;
+import org.apache.bcel.classfile.ConstantLong;
 import org.apache.bcel.classfile.JavaClass;
 import org.apache.bcel.classfile.Method;
-import org.apache.bcel.generic.ClassGen;
-import org.apache.bcel.generic.ConstantPoolGen;
-import org.apache.bcel.generic.InstructionHandle;
-import org.apache.bcel.generic.InstructionList;
+import org.apache.bcel.generic.*;
 import org.apache.bcel.util.InstructionFinder;
-import org.apache.bcel.generic.MethodGen;
-import org.apache.bcel.generic.TargetLostException;
-
-
-import org.apache.bcel.generic.ConstantPushInstruction;
-import org.apache.bcel.generic.LDC;
-import org.apache.bcel.generic.InstructionTargeter;
-import org.apache.bcel.generic.LDC2_W;
-import org.apache.bcel.generic.Instruction;
-
 
 
 public class ConstantFolder
@@ -45,8 +38,7 @@ public class ConstantFolder
 		}
 	}
 	
-	public void optimize()
-	{
+	public void optimize() {
 		ClassGen cgen = new ClassGen(original);
 		ConstantPoolGen cpgen = cgen.getConstantPool();
 
@@ -55,8 +47,14 @@ public class ConstantFolder
 			InstructionList il = mg.getInstructionList();
 			if (il == null) continue;
 
-			//Task 1 Call
+			// Task 1 Call
 			simpleFolding(il, cpgen);
+
+			// Task 2 call
+			System.out.println("\n=== Method: " + method.getName() + " ===\n\n");
+			//constantVariables(il, cpgen);
+			Map<Integer, Object> constantVariables = constantFolding(il, cpgen);
+			System.out.println("Constant variables: " + constantVariables);
 
 			//Call your methods here
 
@@ -69,10 +67,10 @@ public class ConstantFolder
 		this.optimized = gen.getJavaClass();
 	}
 
-/**
-	 * Performs simple constant folding over the instruction list.
-	 * Uses patterns defined in the FoldOp enum to detect constant expressions and simplify them.
-*/
+	/**
+		 * Performs simple constant folding over the instruction list.
+		 * Uses patterns defined in the FoldOp enum to detect constant expressions and simplify them.
+	*/
 	private void simpleFolding(InstructionList il, ConstantPoolGen cpgen) {
 		InstructionFinder finder = new InstructionFinder(il);
 
@@ -100,6 +98,88 @@ public class ConstantFolder
 		}
 	}
 
+	private Map<Integer, Object> constantFolding(InstructionList il, ConstantPoolGen cpgen) {
+		Map<Integer, Object> constantVars = new HashMap<>();
+		Map<Integer, InstructionHandle> lastStore = new HashMap<>();
+
+		for (InstructionHandle ih = il.getStart(); ih != null; ih = ih.getNext()) {
+			Instruction inst = ih.getInstruction();
+
+			if (inst instanceof StoreInstruction) {
+				int varIndex = ((StoreInstruction) inst).getIndex();
+				lastStore.put(varIndex, ih);
+				
+				InstructionHandle prevIh = ih.getPrev();
+				Object constantValue = null;
+
+				if (prevIh != null) {
+					Instruction prevInst = prevIh.getInstruction();
+
+					if (prevInst instanceof ConstantPushInstruction) {
+						constantValue = ((ConstantPushInstruction) prevInst).getValue().intValue();
+					} else if (prevInst instanceof LDC || prevInst instanceof LDC2_W) {
+						int index;
+						if (prevInst instanceof LDC) {
+							index = ((LDC) prevInst).getIndex();
+						} else {
+							index = ((LDC2_W) prevInst).getIndex();
+						}
+						
+						Constant c = cpgen.getConstant(index);
+						if (c instanceof ConstantInteger) {
+							constantValue = ((ConstantInteger) c).getBytes();
+						} else if (c instanceof ConstantLong) {
+							constantValue = ((ConstantLong) c).getBytes();
+						} else if (c instanceof ConstantFloat) {
+							constantValue = ((ConstantFloat) c).getBytes();
+						} else if (c instanceof ConstantDouble) {
+							constantValue = ((ConstantDouble) c).getBytes();
+						}
+					} else if (prevInst instanceof ICONST) {
+						constantValue = ((ICONST) prevInst).getValue().intValue();
+					} else if (prevInst instanceof LCONST) {
+						constantValue = ((LCONST) prevInst).getValue().longValue();
+					} else if (prevInst instanceof FCONST) {
+						constantValue = ((FCONST) prevInst).getValue().floatValue();
+					} else if (prevInst instanceof DCONST) {
+						constantValue = ((DCONST) prevInst).getValue().doubleValue();
+					}
+				}
+
+				if (constantValue != null) {
+					if (constantVars.containsKey(varIndex)) {
+						constantVars.remove(varIndex);
+					} else {
+						constantVars.put(varIndex, constantValue);
+					}
+				} else {
+					constantVars.remove(varIndex);
+				}
+			}
+		}
+
+		// Second pass to remove non-constant declarations
+		Map<Integer, Object> verifiedConstants = new HashMap<>();
+		for (Map.Entry<Integer, Object> entry : constantVars.entrySet()) {
+			int varIndex = entry.getKey();
+			InstructionHandle storeIh = lastStore.get(varIndex);
+			boolean isModified = false;
+			
+			for (InstructionHandle ih = storeIh.getNext(); ih != null; ih = ih.getNext()) {
+				Instruction i = ih.getInstruction();
+				if (i instanceof StoreInstruction && ((StoreInstruction) i).getIndex() == varIndex) {
+					isModified = true;
+					break;
+				}
+			}
+			
+			if (!isModified) {
+				verifiedConstants.put(varIndex, entry.getValue());
+			}
+		}
+		return verifiedConstants;
+	}
+
 	public void write(String optimisedFilePath)
 	{
 		this.optimize();
@@ -116,7 +196,9 @@ public class ConstantFolder
 		}
 	}
 
-//Helper method to extract a constant value from an instruction. ConstantPushInstruction, LDC, and LDC2_W.
+	/*
+		Helper method to extract a constant value from an instruction. ConstantPushInstruction, LDC, and LDC2_W.
+	*/
 	private Number getValue(Instruction inst) {
 		if (inst instanceof ConstantPushInstruction cpi) {
 			return cpi.getValue();
