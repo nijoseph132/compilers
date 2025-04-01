@@ -8,267 +8,194 @@ import java.util.Iterator;
 import org.apache.bcel.classfile.ClassParser;
 import org.apache.bcel.classfile.JavaClass;
 import org.apache.bcel.classfile.Method;
-import org.apache.bcel.generic.ClassGen;
-import org.apache.bcel.generic.ConstantPoolGen;
-import org.apache.bcel.generic.ConstantPushInstruction;
-import org.apache.bcel.generic.Instruction;
-import org.apache.bcel.generic.InstructionHandle;
-import org.apache.bcel.generic.InstructionList;
-import org.apache.bcel.generic.LDC;
-import org.apache.bcel.generic.LDC2_W;
-import org.apache.bcel.generic.MethodGen;
-import org.apache.bcel.generic.TargetLostException;
+import org.apache.bcel.generic.*;
 import org.apache.bcel.util.InstructionFinder;
-import java.io.FileNotFoundException;
-import org.apache.bcel.generic.InstructionTargeter;
-
 
 public class ConstantFolder {
-    ClassParser parser = null;
-    ClassGen gen = null;
-    JavaClass original = null;
-    JavaClass optimized = null;
+    JavaClass original;
+    JavaClass optimized;
 
     public ConstantFolder(String classFilePath) {
         try {
-            this.parser = new ClassParser(classFilePath);
-            this.original = this.parser.parse();
-            this.gen = new ClassGen(this.original);
+            ClassParser parser = new ClassParser(classFilePath);
+            this.original = parser.parse();
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-	public void optimize() {
-		// Create a new ClassGen based on the original class.
-		ClassGen cgen = new ClassGen(original);
-		ConstantPoolGen cpgen = cgen.getConstantPool();
+    /**
+     * Writes the optimized class file to disk.
+     * Expected input: output file path.
+     * Expected outcome: optimized bytecode written to the given path.
+     */
+    public void write(String outputPath) {
+        this.optimize();
+        try (FileOutputStream out = new FileOutputStream(new File(outputPath))) {
+            this.optimized.dump(out);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
 
-		Method[] methods = cgen.getMethods();
-		for (int i = 0; i < methods.length; i++) {
-			// Remove the check for "simple" here
+   
+    // Runs simple constant folding optimization on all methods in the class.
+   
+    public void optimize() {
+        ClassGen cg = new ClassGen(original);
+        ConstantPoolGen cp = cg.getConstantPool();
 
-			MethodGen mg = new MethodGen(methods[i], cgen.getClassName(), cpgen);
-			mg.removeNOPs();
-			InstructionList il = mg.getInstructionList();
-			if (il == null)
-				continue;
+        for (Method method : cg.getMethods()) {
+            MethodGen mg = new MethodGen(method, cg.getClassName(), cp);
+            mg.removeNOPs();
+            InstructionList il = mg.getInstructionList();
+            if (il == null) continue;
 
-			// Repeatedly apply constant folding until no changes occur.
-			boolean changed;
-			do {
-				changed = simpleFolding(il, cpgen);
-				il.setPositions(); // update instruction offsets after modifications
-			} while (changed);
+            boolean changed;
+            do {
+                changed = simpleFolding(il, cp);
+                il.setPositions();
+            } while (changed);
 
-			// Strip unnecessary attributes and update stack/local variable info.
-			mg.stripAttributes(true);
-			mg.setMaxStack();
-			mg.setMaxLocals();
-			cgen.replaceMethod(methods[i], mg.getMethod());
-		}
+            mg.setMaxStack();
+            mg.setMaxLocals();
+            mg.stripAttributes(true);
+            cg.replaceMethod(method, mg.getMethod());
+        }
 
-		// Update the ClassGen with the new constant pool and set the class version.
-		cgen.setConstantPool(cpgen);
-		cgen.setMajor(50);
-		this.optimized = cgen.getJavaClass();
-	}
+        cg.setConstantPool(cp);
+        cg.setMajor(50);  
+        this.optimized = cg.getJavaClass();
+    }
 
-
-    // Returns true if any folding occurred.
-    private boolean simpleFolding(InstructionList il, ConstantPoolGen cpgen) {
+    /**
+     * Performs one pass of constant folding over a method's instruction list.
+     * Matches patterns of the form: PushInstruction PushInstruction ArithmeticInstruction.
+     * Expected outcome: e.g., 'ldc 2', 'ldc 3', 'iadd' → replaced with 'ldc 5'.
+     */
+    private boolean simpleFolding(InstructionList il, ConstantPoolGen cp) {
         boolean changed = false;
         InstructionFinder finder = new InstructionFinder(il);
+        String pattern = "PushInstruction PushInstruction ArithmeticInstruction";
 
-        // Loop through each supported binary arithmetic operation.
-        for (FoldOp op : FoldOp.values()) {
-            // Use a pattern that matches any PushInstruction (which includes LDC, LDC2_W, etc.)
-            for (Iterator<?> iter = finder.search(op.pattern); iter.hasNext(); ) {
-                InstructionHandle[] match = (InstructionHandle[]) iter.next();
+        for (Iterator<?> it = finder.search(pattern); it.hasNext(); ) {
+            InstructionHandle[] match = (InstructionHandle[]) it.next();
+            Instruction i1 = match[0].getInstruction();
+            Instruction i2 = match[1].getInstruction();
+            Instruction op = match[2].getInstruction();
+
+            Number n1 = getValue(i1, cp);
+            Number n2 = getValue(i2, cp);
+            if (n1 == null || n2 == null) continue;
+
+            try {
+                Instruction replacement = fold(op, n1, n2, cp);
+                if (replacement == null) continue;
+
+                InstructionHandle newHandle = il.insert(match[0], replacement);
                 try {
-                    Number a = getValue(match[0].getInstruction());
-                    Number b = getValue(match[1].getInstruction());
-                    if (a == null || b == null)
-                        continue;
-                    Number result = op.fold(a, b);
-                    Instruction folded = op.push(result, cpgen);
-                    InstructionHandle newHandle = il.insert(match[0], folded);
-					try {
-						// Delete the original three instructions
-						il.delete(match[0], match[2]);
-					} catch (TargetLostException ex) {
-						// If there were branch targets on those instructions,
-						// BCEL throws this exception and provides them for you to update:
-						for (InstructionHandle lost : ex.getTargets()) {
-							for (InstructionTargeter targeter : lost.getTargeters()) {
-								targeter.updateTarget(lost, newHandle);
-							}
-						}
-					}
+                    il.delete(match[0], match[2]);
+                } catch (TargetLostException e) {
+                    for (InstructionHandle lost : e.getTargets()) {
+                        for (InstructionTargeter t : lost.getTargeters()) {
+                            t.updateTarget(lost, newHandle);
+                        }
+                    }
+                }
 
-// If we made it here, everything was deleted (and possibly retargeted),
-// so we can safely say we've changed the code.
-changed = true;
-
-                    changed = true;
-                } catch (ArithmeticException e) {
-                    // Skip cases like division by zero.
-                    continue;
-                } catch (Exception ignored) {}
+                changed = true;
+            } catch (ArithmeticException e) {
+                System.out.println("Division by zero skipped.");
             }
         }
         return changed;
     }
 
-	public void write(String optimisedFilePath)
-	{
-		this.optimize();
-
-		try (FileOutputStream out = new FileOutputStream(new File(optimisedFilePath))) {
-			this.optimized.dump(out);
-		}
-		catch (FileNotFoundException e) {
-			e.printStackTrace();
-		}
-		catch (IOException e) {
-			e.printStackTrace();
-		}
-	}
-
-
-    private Number getValue(Instruction inst) {
-        if (inst instanceof ConstantPushInstruction)
+    /**
+     * Extracts constant values from supported instructions (ICONST, BIPUSH, SIPUSH, LDC, LDC2_W).
+     * Expected input: an instruction and the constant pool.
+     * Expected outcome: the Number it pushes to the stack, or null if unsupported.
+     */
+    private Number getValue(Instruction inst, ConstantPoolGen cp) {
+        if (inst instanceof ConstantPushInstruction) {
             return ((ConstantPushInstruction) inst).getValue();
-        else if (inst instanceof LDC) {
-            Object val = ((LDC) inst).getValue(null);
-            return (val instanceof Number) ? (Number) val : null;
+        } else if (inst instanceof LDC) {
+            Object v = ((LDC) inst).getValue(cp);
+            return (v instanceof Number) ? (Number) v : null;
         } else if (inst instanceof LDC2_W) {
-            Object val = ((LDC2_W) inst).getValue(null);
-            return (val instanceof Number) ? (Number) val : null;
+            Object v = ((LDC2_W) inst).getValue(cp);
+            return (v instanceof Number) ? (Number) v : null;
         }
         return null;
     }
 
-    // Enumeration for folding operations with patterns matching PushInstructions.
-    private enum FoldOp {
-        IADD("PushInstruction PushInstruction IADD") {
-            public Number fold(Number a, Number b) { return a.intValue() + b.intValue(); }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC(cp.addInteger(result.intValue()));
-            }
-        },
-        FADD("PushInstruction PushInstruction FADD") {
-            public Number fold(Number a, Number b) { return a.floatValue() + b.floatValue(); }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC(cp.addFloat(result.floatValue()));
-            }
-        },
-        LADD("PushInstruction PushInstruction LADD") {
-            public Number fold(Number a, Number b) { return a.longValue() + b.longValue(); }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC2_W(cp.addLong(result.longValue()));
-            }
-        },
-        DADD("PushInstruction PushInstruction DADD") {
-            public Number fold(Number a, Number b) { return a.doubleValue() + b.doubleValue(); }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC2_W(cp.addDouble(result.doubleValue()));
-            }
-        },
-        ISUB("PushInstruction PushInstruction ISUB") {
-            public Number fold(Number a, Number b) { return a.intValue() - b.intValue(); }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC(cp.addInteger(result.intValue()));
-            }
-        },
-        FSUB("PushInstruction PushInstruction FSUB") {
-            public Number fold(Number a, Number b) { return a.floatValue() - b.floatValue(); }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC(cp.addFloat(result.floatValue()));
-            }
-        },
-        LSUB("PushInstruction PushInstruction LSUB") {
-            public Number fold(Number a, Number b) { return a.longValue() - b.longValue(); }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC2_W(cp.addLong(result.longValue()));
-            }
-        },
-        DSUB("PushInstruction PushInstruction DSUB") {
-            public Number fold(Number a, Number b) { return a.doubleValue() - b.doubleValue(); }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC2_W(cp.addDouble(result.doubleValue()));
-            }
-        },
-        IMUL("PushInstruction PushInstruction IMUL") {
-            public Number fold(Number a, Number b) { return a.intValue() * b.intValue(); }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC(cp.addInteger(result.intValue()));
-            }
-        },
-        FMUL("PushInstruction PushInstruction FMUL") {
-            public Number fold(Number a, Number b) { return a.floatValue() * b.floatValue(); }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC(cp.addFloat(result.floatValue()));
-            }
-        },
-        LMUL("PushInstruction PushInstruction LMUL") {
-            public Number fold(Number a, Number b) { return a.longValue() * b.longValue(); }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC2_W(cp.addLong(result.longValue()));
-            }
-        },
-        DMUL("PushInstruction PushInstruction DMUL") {
-            public Number fold(Number a, Number b) { return a.doubleValue() * b.doubleValue(); }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC2_W(cp.addDouble(result.doubleValue()));
-            }
-        },
-        IDIV("PushInstruction PushInstruction IDIV") {
-            public Number fold(Number a, Number b) {
-                if (b.intValue() == 0)
-                    throw new ArithmeticException("Division by zero");
-                return a.intValue() / b.intValue();
-            }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC(cp.addInteger(result.intValue()));
-            }
-        },
-        FDIV("PushInstruction PushInstruction FDIV") {
-            public Number fold(Number a, Number b) {
-                if (b.floatValue() == 0.0f)
-                    throw new ArithmeticException("Division by zero");
-                return a.floatValue() / b.floatValue();
-            }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC(cp.addFloat(result.floatValue()));
-            }
-        },
-        LDIV("PushInstruction PushInstruction LDIV") {
-            public Number fold(Number a, Number b) {
-                if (b.longValue() == 0L)
-                    throw new ArithmeticException("Division by zero");
-                return a.longValue() / b.longValue();
-            }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC2_W(cp.addLong(result.longValue()));
-            }
-        },
-        DDIV("PushInstruction PushInstruction DDIV") {
-            public Number fold(Number a, Number b) {
-                if (b.doubleValue() == 0.0d)
-                    throw new ArithmeticException("Division by zero");
-                return a.doubleValue() / b.doubleValue();
-            }
-            public Instruction push(Number result, ConstantPoolGen cp) {
-                return new LDC2_W(cp.addDouble(result.doubleValue()));
-            }
-        };
-
-        public final String pattern;
-        FoldOp(String pattern) {
-            this.pattern = pattern;
+    /**
+     * Computes the result of applying an arithmetic operation to two constants,
+     * and returns the appropriate BCEL instruction to push the result.
+     * Supported operations: +, -, *, /, % for int, long, float, double.
+     * Expected outcome: new instruction to replace the operation sequence.
+     */
+    private Instruction fold(Instruction op, Number a, Number b, ConstantPoolGen cp) {
+        if (op instanceof IADD)
+            return new LDC(cp.addInteger(a.intValue() + b.intValue()));
+        if (op instanceof ISUB)
+            return new LDC(cp.addInteger(a.intValue() - b.intValue()));
+        if (op instanceof IMUL)
+            return new LDC(cp.addInteger(a.intValue() * b.intValue()));
+        if (op instanceof IDIV) {
+            if (b.intValue() == 0) throw new ArithmeticException();
+            return new LDC(cp.addInteger(a.intValue() / b.intValue()));
         }
-        public abstract Number fold(Number a, Number b);
-        public abstract Instruction push(Number result, ConstantPoolGen cp);
+        if (op instanceof IREM) {
+            if (b.intValue() == 0) throw new ArithmeticException();
+            return new LDC(cp.addInteger(a.intValue() % b.intValue()));
+        }
+
+        if (op instanceof LADD)
+            return new LDC2_W(cp.addLong(a.longValue() + b.longValue()));
+        if (op instanceof LSUB)
+            return new LDC2_W(cp.addLong(a.longValue() - b.longValue()));
+        if (op instanceof LMUL)
+            return new LDC2_W(cp.addLong(a.longValue() * b.longValue()));
+        if (op instanceof LDIV) {
+            if (b.longValue() == 0L) throw new ArithmeticException();
+            return new LDC2_W(cp.addLong(a.longValue() / b.longValue()));
+        }
+        if (op instanceof LREM) {
+            if (b.longValue() == 0L) throw new ArithmeticException();
+            return new LDC2_W(cp.addLong(a.longValue() % b.longValue()));
+        }
+
+        if (op instanceof FADD)
+            return new LDC(cp.addFloat(a.floatValue() + b.floatValue()));
+        if (op instanceof FSUB)
+            return new LDC(cp.addFloat(a.floatValue() - b.floatValue()));
+        if (op instanceof FMUL)
+            return new LDC(cp.addFloat(a.floatValue() * b.floatValue()));
+        if (op instanceof FDIV) {
+            if (b.floatValue() == 0.0f) throw new ArithmeticException();
+            return new LDC(cp.addFloat(a.floatValue() / b.floatValue()));
+        }
+        if (op instanceof FREM) {
+            if (b.floatValue() == 0.0f) throw new ArithmeticException();
+            return new LDC(cp.addFloat(a.floatValue() % b.floatValue()));
+        }
+
+        if (op instanceof DADD)
+            return new LDC2_W(cp.addDouble(a.doubleValue() + b.doubleValue()));
+        if (op instanceof DSUB)
+            return new LDC2_W(cp.addDouble(a.doubleValue() - b.doubleValue()));
+        if (op instanceof DMUL)
+            return new LDC2_W(cp.addDouble(a.doubleValue() * b.doubleValue()));
+        if (op instanceof DDIV) {
+            if (b.doubleValue() == 0.0d) throw new ArithmeticException();
+            return new LDC2_W(cp.addDouble(a.doubleValue() / b.doubleValue()));
+        }
+        if (op instanceof DREM) {
+            if (b.doubleValue() == 0.0d) throw new ArithmeticException();
+            return new LDC2_W(cp.addDouble(a.doubleValue() % b.doubleValue()));
+        }
+
+        return null;
     }
 }
