@@ -10,6 +10,8 @@ import org.apache.bcel.classfile.JavaClass;
 import org.apache.bcel.classfile.Method;
 import org.apache.bcel.generic.*;
 import org.apache.bcel.util.InstructionFinder;
+import java.io.FileNotFoundException;
+
 
 public class ConstantFolder {
     JavaClass original;
@@ -29,15 +31,20 @@ public class ConstantFolder {
      * Expected input: output file path.
      * Expected outcome: optimized bytecode written to the given path.
      */
-    public void write(String outputPath) {
-        this.optimize();
-        try (FileOutputStream out = new FileOutputStream(new File(outputPath))) {
-            this.optimized.dump(out);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
+    public void write(String optimisedFilePath)
+	{
+		this.optimize();
+		try {
+			FileOutputStream out = new FileOutputStream(new File(optimisedFilePath));
+			this.optimized.dump(out);
+		} catch (FileNotFoundException e) {
+			// Auto-generated catch block
+			e.printStackTrace();
+		} catch (IOException e) {
+			// Auto-generated catch block
+			e.printStackTrace();
+		}
+	}
    
     // Runs simple constant folding optimization on all methods in the class.
    
