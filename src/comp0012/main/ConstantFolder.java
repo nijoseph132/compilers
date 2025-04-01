@@ -3,8 +3,10 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 
 import org.apache.bcel.classfile.ClassParser;
@@ -178,6 +180,70 @@ public class ConstantFolder
 
 		// Finally, fold all found constants
 		System.out.println("Constant variables: " + verifiedConstants);
+		replaceLoadsWithConstants(il, cpgen, constantVars);
+	}
+	/*/
+	private void replaceLoadsWithConstants(InstructionList il, ConstantPoolGen cpgen, Map<Integer, Object> constantVars) {
+		List<InstructionHandle> toReplace = new ArrayList<>();
+		InstructionFactory factory = new InstructionFactory(cpgen);
+	
+		// Find all load instructions for defined constant variables
+		for (InstructionHandle ih = il.getStart(); ih != null; ih = ih.getNext()) {
+			Instruction inst = ih.getInstruction();
+			if (inst instanceof LoadInstruction) {
+				int varIndex = ((LoadInstruction) inst).getIndex();
+				if (constantVars.containsKey(varIndex)) {
+					toReplace.add(ih);
+				}
+			}
+		}
+		System.out.println("To replace: " + toReplace);
+
+		for (InstructionHandle ih : toReplace) {
+			int varIndex = ((LoadInstruction) ih.getInstruction()).getIndex();
+			Object value = constantVars.get(varIndex);
+	
+			try {
+				Instruction constInst = factory.createConstant(value);
+				System.out.println(constInst);
+			} catch (IllegalArgumentException e) {
+				System.err.println("Could not create constant for value: " + value);
+			}
+		}
+	}
+	*/
+
+	private void replaceLoadsWithConstants(InstructionList il, ConstantPoolGen cpgen, 
+                                     Map<Integer, Object> constantVars) {
+		InstructionFactory factory = new InstructionFactory(cpgen);
+		List<InstructionHandle> replacements = new ArrayList<>();
+		Map<InstructionHandle, Instruction> newInstructions = new HashMap<>();
+
+		for (InstructionHandle ih = il.getStart(); ih != null; ih = ih.getNext()) {
+			Instruction inst = ih.getInstruction();
+			if (inst instanceof LoadInstruction) {
+				int varIndex = ((LoadInstruction) inst).getIndex();
+				if (constantVars.containsKey(varIndex)) {
+					Instruction constInst = factory.createConstant(constantVars.get(varIndex));
+					replacements.add(ih);
+					newInstructions.put(ih, constInst);
+				}
+			}
+		}
+		System.out.println(newInstructions);
+
+		for (InstructionHandle oldIh : replacements) {
+			Instruction newInst = newInstructions.get(oldIh);
+			InstructionHandle newIh = il.insert(oldIh, newInst);
+
+			try {
+                il.delete(oldIh);
+            } catch (TargetLostException e) {
+                for (InstructionHandle target : e.getTargets()) {
+                    target.setInstruction(InstructionConstants.NOP);
+                }
+            }
+		}
 	}
 
 	public void write(String optimisedFilePath)
