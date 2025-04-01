@@ -55,6 +55,7 @@ public class ConstantFolder
 		ConstantPoolGen cpgen = cgen.getConstantPool();
 
 		for (Method method : cgen.getMethods()) {
+
 			MethodGen mg = new MethodGen(method, cgen.getClassName(), cpgen);
 			InstructionList il = mg.getInstructionList();
             // System.out.println(il);
@@ -65,7 +66,8 @@ public class ConstantFolder
             // MethodGen mg = new MethodGen(method.getAccessFlags(), method.getReturnType(), method.getArgumentTypes(), null, method.getName(), cgen.getClassName(), il , cpgen);
 
             dynamicFolding(il, mg);
-            simpleFolding(il, cpgen);
+            // System.out.println(il);
+
             // Just a skeleton
 
             // boolean hasChanges = false;
@@ -90,6 +92,7 @@ public class ConstantFolder
     private void dynamicFolding(InstructionList il, MethodGen mg) {
         HashMap<Integer, Integer> varMap = new HashMap<>();
         int maxLocals = mg.getMaxLocals(); // Track the highest used variable index
+        // System.out.println("initial maxLocals: " + maxLocals);
     
         for (InstructionHandle handle = il.getStart(); handle != null;) {
             InstructionHandle next = handle.getNext();
@@ -102,49 +105,52 @@ public class ConstantFolder
     
                 if (varMap.containsKey(varIndex)) {
                     newVarIndex = ++maxLocals;
+                    // System.out.println("inc maxLocals: " + maxLocals);
                 } else {
                     newVarIndex = varIndex;
-                    // varMap.put(varIndex, varIndex);
                 }
                 
                 varMap.put(varIndex, newVarIndex);
                 // Replace the instruction with a new instance of the same type
-                Instruction newStore = createNewStoreInstruction(store, newVarIndex);
+                // Instruction newStore = createNewStoreInstruction(store, newVarIndex);
 
                 // System.out.println("store, new var index: " + varMap.get(varIndex));
                 // System.out.println("store instruction" + store);
                 // System.out.println("instruction list: " + il);
 
                 // handle.setInstruction(newStore);
-                il.insert(handle, newStore);
-				try {
-					il.delete(handle);
-				} catch (TargetLostException e) {
-					e.printStackTrace();
-				}
+                // il.insert(handle, newStore);
+				// try {
+				// 	il.delete(handle);
+				// } catch (TargetLostException e) {
+				// 	e.printStackTrace();
+				// }
+                store.setIndex(newVarIndex);
             } else if (inst instanceof LoadInstruction load) {
                 int varIndex = load.getIndex();
                 if (varMap.containsKey(varIndex)) {
                     int newVarIndex = varMap.get(varIndex);
     
                     // Replace the instruction with a new instance of the same type
-                    Instruction newLoad = createNewLoadInstruction(load, newVarIndex);
+                    // Instruction newLoad = createNewLoadInstruction(load, newVarIndex);
                     
                     // System.out.println("load: new var index: " + varMap.get(varIndex));
                     // System.out.println("load instruction" + load);
 
                     // handle.setInstruction(newLoad); 
-                    il.insert(handle, newLoad);
-                    try {
-                        il.delete(handle);
-                    } catch (TargetLostException e) {
-                        e.printStackTrace();
-                    }
+                    // il.insert(handle, newLoad);
+                    // try {
+                    //     il.delete(handle);
+                    // } catch (TargetLostException e) {
+                    //     e.printStackTrace();
+                    // }
+                    load.setIndex(newVarIndex);
                 }
             }
             handle = next;
         }
-    
+        il.setPositions(true);
+        // System.out.println("final maxLocals: " + maxLocals);
         mg.setMaxLocals(maxLocals); // Ensure the method has enough space for new variables
     }
     
@@ -167,8 +173,6 @@ public class ConstantFolder
     }
     
     
-
-
 /**
 	 * Performs simple constant folding over the instruction list.
 	 * Uses patterns defined in the FoldOp enum to detect constant expressions and simplify them.
