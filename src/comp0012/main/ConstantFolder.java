@@ -66,7 +66,8 @@ public class ConstantFolder
             // MethodGen mg = new MethodGen(method.getAccessFlags(), method.getReturnType(), method.getArgumentTypes(), null, method.getName(), cgen.getClassName(), il , cpgen);
 
             dynamicFolding(il, mg);
-            // System.out.println(il);
+            System.out.println(mg.getName());
+            System.out.println(il);
 
             // Just a skeleton
 
