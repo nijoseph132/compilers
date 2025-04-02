@@ -88,6 +88,10 @@ public class ConstantFolder {
 
 			// Perform constant folding
 			constantFolding(il, cp);
+
+			// Remove conversion instructions
+			removeConversionInstructions(il, cp);
+
 			il.setPositions();
 			
 		} while (modificationsMade);
@@ -298,6 +302,45 @@ public class ConstantFolder {
 			}
 		});
 	}
+
+	/* 
+	 * Loops over instruction list and removes any type cast operations by replacing them
+	 * with a single intruction to load the resulting value directly as a constant
+	 */
+	private void removeConversionInstructions(InstructionList il, ConstantPoolGen cpgen) {
+		InstructionFactory factory = new InstructionFactory(cpgen);
+	
+		for (InstructionHandle ih = il.getStart(); ih != null; ih = ih.getNext()) {
+			Instruction inst = ih.getInstruction();
+			
+			if (inst instanceof ConversionInstruction) {
+				InstructionHandle prevIh = ih.getPrev();
+
+				if (prevIh == null || !isConstantPush(prevIh)) {
+					continue;
+				}
+			
+				Object originalValue = getConstantValue(prevIh, cpgen);
+				if (originalValue == null) {
+					continue;
+				}
+					
+				Object convertedValue = convertValue(originalValue, (ConversionInstruction) inst);
+				if (convertedValue == null) {
+					continue;
+				}
+				Instruction newLoad = factory.createConstant(convertedValue);			
+				try {
+					il.insert(prevIh, newLoad);
+					il.delete(prevIh, ih);
+					modificationsMade = true;
+				} catch (TargetLostException e) {
+					e.printStackTrace();
+				}
+
+			}
+		}
+	}
 	
 	private Object getConstantValue(InstructionHandle prevIh, ConstantPoolGen cpgen) {
 		if (prevIh == null) return null;
@@ -320,7 +363,36 @@ public class ConstantFolder {
 		}
 		return null;
 	}
-	
+
+	private Object convertValue(Object value, ConversionInstruction convInst) {
+		if (convInst instanceof I2D && value instanceof Integer) {
+			return ((Integer) value).doubleValue();
+		} else if (convInst instanceof I2F && value instanceof Integer) {
+			return ((Integer) value).floatValue();
+		} else if (convInst instanceof I2L && value instanceof Integer) {
+			return ((Integer) value).longValue();
+		} else if (convInst instanceof L2I && value instanceof Long) {
+			return ((Long) value).intValue();
+		} else if (convInst instanceof L2F && value instanceof Long) {
+			return ((Long) value).floatValue();
+		} else if (convInst instanceof L2D && value instanceof Long) {
+			return ((Long) value).doubleValue();
+		} else if (convInst instanceof F2I && value instanceof Float) {
+			return ((Float) value).intValue();
+		} else if (convInst instanceof F2L && value instanceof Float) {
+			return ((Float) value).longValue();
+		} else if (convInst instanceof F2D && value instanceof Float) {
+			return ((Float) value).doubleValue();
+		} else if (convInst instanceof D2I && value instanceof Double) {
+			return ((Double) value).intValue();
+		} else if (convInst instanceof D2L && value instanceof Double) {
+			return ((Double) value).longValue();
+		} else if (convInst instanceof D2F && value instanceof Double) {
+			return ((Double) value).floatValue();
+		}
+		return null;
+	}
+
 	private Object getConstantValue(Constant c) {
 		if (c instanceof ConstantInteger) return ((ConstantInteger) c).getBytes();
 		if (c instanceof ConstantLong) return ((ConstantLong) c).getBytes();
