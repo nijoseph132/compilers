@@ -1,6 +1,6 @@
 package comp0012.main;
+
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.HashMap;
@@ -20,83 +20,203 @@ import org.apache.bcel.classfile.Method;
 import org.apache.bcel.generic.*;
 import org.apache.bcel.util.InstructionFinder;
 
+public class ConstantFolder {
+    JavaClass original;
+    JavaClass optimized;
 
-public class ConstantFolder
-{
-	ClassParser parser = null;
-	ClassGen gen = null;
-
-	JavaClass original = null;
-	JavaClass optimized = null;
-
-	public ConstantFolder(String classFilePath)
-	{
-		try{
-			this.parser = new ClassParser(classFilePath);
-			this.original = this.parser.parse();
-			this.gen = new ClassGen(this.original);
-		} catch(IOException e){
-			e.printStackTrace();
-		}
-	}
-	
-	public void optimize() {
-		ClassGen cgen = new ClassGen(original);
-		ConstantPoolGen cpgen = cgen.getConstantPool();
-
-		for (Method method : cgen.getMethods()) {
-			MethodGen mg = new MethodGen(method, cgen.getClassName(), cpgen);
-			InstructionList il = mg.getInstructionList();
-			if (il == null) continue;
-
-			// Task 1 Call
-			simpleFolding(il, cpgen);
-
-			// Task 2 call
-			System.out.println("\n=== Method: " + method.getName() + " ===\n\n");
-			constantFolding(il, cpgen);
-
-			//Call your methods here
-
-			mg.setInstructionList(il);
-			mg.setMaxStack();
-			mg.setMaxLocals();
-			cgen.replaceMethod(method, mg.getMethod());
+    public ConstantFolder(String classFilePath) {
+        try {
+            ClassParser parser = new ClassParser(classFilePath);
+            this.original = parser.parse();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
-		this.gen = cgen;
-		this.optimized = gen.getJavaClass();
-	}
 
-	/**
-		 * Performs simple constant folding over the instruction list.
-		 * Uses patterns defined in the FoldOp enum to detect constant expressions and simplify them.
-	*/
-	private void simpleFolding(InstructionList il, ConstantPoolGen cpgen) {
+    /**
+     * Writes the optimized class file to disk.
+     * Expected input: output file path.
+     * Expected outcome: optimized bytecode written to the given path.
+     */
+    public void write(String outputPath) {
+        this.optimize();
+        try (FileOutputStream out = new FileOutputStream(new File(outputPath))) {
+            this.optimized.dump(out);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+   
+    // Runs simple constant folding optimization on all methods in the class.
+   
+    public void optimize() {
+        ClassGen cg = new ClassGen(original);
+        ConstantPoolGen cp = cg.getConstantPool();
+
+        for (Method method : cg.getMethods()) {
+            MethodGen mg = new MethodGen(method, cg.getClassName(), cp);
+            mg.removeNOPs();
+            InstructionList il = mg.getInstructionList();
+            if (il == null) continue;
+
+            boolean changed;
+            do {
+                changed = simpleFolding(il, cp);
+                il.setPositions();
+            } while (changed);
+
+            mg.setMaxStack();
+            mg.setMaxLocals();
+            mg.stripAttributes(true);
+            cg.replaceMethod(method, mg.getMethod());
+        }
+
+        cg.setConstantPool(cp);
+        cg.setMajor(50);  
+        this.optimized = cg.getJavaClass();
+    }
+
+    /**
+     * Performs one pass of constant folding over a method's instruction list.
+     * Matches patterns of the form: PushInstruction PushInstruction ArithmeticInstruction.
+     * Expected outcome: e.g., 'ldc 2', 'ldc 3', 'iadd' → replaced with 'ldc 5'.
+     */
+    private boolean simpleFolding(InstructionList il, ConstantPoolGen cp) {
+		boolean changed = false;
 		InstructionFinder finder = new InstructionFinder(il);
+		String pattern = "PushInstruction PushInstruction ArithmeticInstruction";
 
-		for (FoldOp op : FoldOp.values()) {
-			for (Iterator<?> iter = finder.search(op.pattern); iter.hasNext(); ) {
-				InstructionHandle[] match = (InstructionHandle[]) iter.next();
+		for (Iterator<?> it = finder.search(pattern); it.hasNext(); ) {
+			InstructionHandle[] match = (InstructionHandle[]) it.next();
+			Instruction i1 = match[0].getInstruction();
+			Instruction i2 = match[1].getInstruction();
+			Instruction op = match[2].getInstruction();
+
+			Number n1 = getValue(i1, cp);
+			Number n2 = getValue(i2, cp);
+			if (n1 == null || n2 == null) continue;
+
+			try {
+				Instruction replacement = fold(op, n1, n2, cp);
+				if (replacement == null) continue;
+
+				InstructionHandle newHandle = il.insert(match[0], replacement);
 
 				try {
-					Number a = getValue(match[0].getInstruction());
-					Number b = getValue(match[1].getInstruction());
-					if (a == null || b == null) continue;
+					il.delete(match[0]);
+				} catch (TargetLostException e) {
+					e.printStackTrace();
+				}
 
-					Number result = op.fold(a, b);
-					Instruction folded = op.push(result, cpgen);
+				try {
+					il.delete(match[1]);
+				} catch (TargetLostException e) {
+					e.printStackTrace();
+				}
 
-					InstructionHandle newHandle = il.insert(match[0], folded);
-					il.delete(match[0], match[2]);
+				try {
+					il.delete(match[2]);
+				} catch (TargetLostException e) {
+					e.printStackTrace();
+				}
 
-					for (InstructionTargeter t : match[2].getTargeters()) {
-						t.updateTarget(match[2], newHandle);
-					}
-
-				} catch (Exception ignored) {}
+				changed = true;
+			} catch (ArithmeticException e) {
+				System.out.println("Division by zero skipped.");
 			}
 		}
+		return changed;
 	}
+
+
+    /**
+     * Extracts constant values from supported instructions (ICONST, BIPUSH, SIPUSH, LDC, LDC2_W).
+     * Expected input: an instruction and the constant pool.
+     * Expected outcome: the Number it pushes to the stack, or null if unsupported.
+     */
+    private Number getValue(Instruction inst, ConstantPoolGen cp) {
+        if (inst instanceof ConstantPushInstruction) {
+            return ((ConstantPushInstruction) inst).getValue();
+        } else if (inst instanceof LDC) {
+            Object v = ((LDC) inst).getValue(cp);
+            return (v instanceof Number) ? (Number) v : null;
+        } else if (inst instanceof LDC2_W) {
+            Object v = ((LDC2_W) inst).getValue(cp);
+            return (v instanceof Number) ? (Number) v : null;
+        }
+        return null;
+    }
+
+    /**
+     * Computes the result of applying an arithmetic operation to two constants,
+     * and returns the appropriate BCEL instruction to push the result.
+     * Supported operations: +, -, *, /, % for int, long, float, double.
+     * Expected outcome: new instruction to replace the operation sequence.
+     */
+    private Instruction fold(Instruction op, Number a, Number b, ConstantPoolGen cp) {
+        if (op instanceof IADD)
+            return new LDC(cp.addInteger(a.intValue() + b.intValue()));
+        if (op instanceof ISUB)
+            return new LDC(cp.addInteger(a.intValue() - b.intValue()));
+        if (op instanceof IMUL)
+            return new LDC(cp.addInteger(a.intValue() * b.intValue()));
+        if (op instanceof IDIV) {
+            if (b.intValue() == 0) throw new ArithmeticException();
+            return new LDC(cp.addInteger(a.intValue() / b.intValue()));
+        }
+        if (op instanceof IREM) {
+            if (b.intValue() == 0) throw new ArithmeticException();
+            return new LDC(cp.addInteger(a.intValue() % b.intValue()));
+        }
+
+        if (op instanceof LADD)
+            return new LDC2_W(cp.addLong(a.longValue() + b.longValue()));
+        if (op instanceof LSUB)
+            return new LDC2_W(cp.addLong(a.longValue() - b.longValue()));
+        if (op instanceof LMUL)
+            return new LDC2_W(cp.addLong(a.longValue() * b.longValue()));
+        if (op instanceof LDIV) {
+            if (b.longValue() == 0L) throw new ArithmeticException();
+            return new LDC2_W(cp.addLong(a.longValue() / b.longValue()));
+        }
+        if (op instanceof LREM) {
+            if (b.longValue() == 0L) throw new ArithmeticException();
+            return new LDC2_W(cp.addLong(a.longValue() % b.longValue()));
+        }
+
+        if (op instanceof FADD)
+            return new LDC(cp.addFloat(a.floatValue() + b.floatValue()));
+        if (op instanceof FSUB)
+            return new LDC(cp.addFloat(a.floatValue() - b.floatValue()));
+        if (op instanceof FMUL)
+            return new LDC(cp.addFloat(a.floatValue() * b.floatValue()));
+        if (op instanceof FDIV) {
+            if (b.floatValue() == 0.0f) throw new ArithmeticException();
+            return new LDC(cp.addFloat(a.floatValue() / b.floatValue()));
+        }
+        if (op instanceof FREM) {
+            if (b.floatValue() == 0.0f) throw new ArithmeticException();
+            return new LDC(cp.addFloat(a.floatValue() % b.floatValue()));
+        }
+
+        if (op instanceof DADD)
+            return new LDC2_W(cp.addDouble(a.doubleValue() + b.doubleValue()));
+        if (op instanceof DSUB)
+            return new LDC2_W(cp.addDouble(a.doubleValue() - b.doubleValue()));
+        if (op instanceof DMUL)
+            return new LDC2_W(cp.addDouble(a.doubleValue() * b.doubleValue()));
+        if (op instanceof DDIV) {
+            if (b.doubleValue() == 0.0d) throw new ArithmeticException();
+            return new LDC2_W(cp.addDouble(a.doubleValue() / b.doubleValue()));
+        }
+        if (op instanceof DREM) {
+            if (b.doubleValue() == 0.0d) throw new ArithmeticException();
+            return new LDC2_W(cp.addDouble(a.doubleValue() % b.doubleValue()));
+        }
+
+        return null;
+    }
 
 	private void constantFolding(InstructionList il, ConstantPoolGen cpgen) {
 		Map<Integer, Object> constantVars = new HashMap<>();
@@ -258,78 +378,4 @@ public class ConstantFolder
 			   inst instanceof FCONST ||
 			   inst instanceof DCONST;
 	}
-
-	public void write(String optimisedFilePath)
-	{
-		this.optimize();
-
-		try {
-			FileOutputStream out = new FileOutputStream(new File(optimisedFilePath));
-			this.optimized.dump(out);
-		} catch (FileNotFoundException e) {
-			// Auto-generated catch block
-			e.printStackTrace();
-		} catch (IOException e) {
-			// Auto-generated catch block
-			e.printStackTrace();
-		}
-	}
-
-	/*
-		Helper method to extract a constant value from an instruction. ConstantPushInstruction, LDC, and LDC2_W.
-	*/
-	private Number getValue(Instruction inst) {
-		if (inst instanceof ConstantPushInstruction cpi) {
-			return cpi.getValue();
-		} else if (inst instanceof LDC ldc) {
-			Object val = ldc.getValue(null);
-			return (val instanceof Number) ? (Number) val : null;
-		} else if (inst instanceof LDC2_W ldc2) {
-			Object val = ldc2.getValue(null);
-			return (val instanceof Number) ? (Number) val : null;
-		}
-		return null;
-	}
-
-/**
-	* Enum FoldOp represents a single arithmetic folding operation.
-	 * Each enum value defines:
-	 * - a pattern to match
-	 * - how to fold the constants
-	 * - how to emit a new constant instruction (LDC or LDC2_W)
-*/
-	private enum FoldOp {
-		IADD("ConstantPushInstruction ConstantPushInstruction IADD") {
-			public Number fold(Number a, Number b) { return a.intValue() + b.intValue(); }
-			public Instruction push(Number result, ConstantPoolGen cp) {
-				return new LDC(cp.addInteger(result.intValue()));
-			}
-		},
-		FADD("LDC LDC FADD") {
-			public Number fold(Number a, Number b) { return a.floatValue() + b.floatValue(); }
-			public Instruction push(Number result, ConstantPoolGen cp) {
-				return new LDC(cp.addFloat(result.floatValue()));
-			}
-		},
-		LADD("LDC2_W LDC2_W LADD") {
-			public Number fold(Number a, Number b) { return a.longValue() + b.longValue(); }
-			public Instruction push(Number result, ConstantPoolGen cp) {
-				return new LDC2_W(cp.addLong(result.longValue()));
-			}
-		},
-		DADD("LDC2_W LDC2_W DADD") {
-			public Number fold(Number a, Number b) { return a.doubleValue() + b.doubleValue(); }
-			public Instruction push(Number result, ConstantPoolGen cp) {
-				return new LDC2_W(cp.addDouble(result.doubleValue()));
-			}
-		};
-
-		public final String pattern;
-		FoldOp(String pattern) { this.pattern = pattern; }
-
-		public abstract Number fold(Number a, Number b);
-		public abstract Instruction push(Number result, ConstantPoolGen cp);
-	}
-
 }
-
