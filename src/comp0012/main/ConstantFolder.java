@@ -23,6 +23,7 @@ import org.apache.bcel.util.InstructionFinder;
 public class ConstantFolder {
     JavaClass original;
     JavaClass optimized;
+	boolean modificationsMade;
 
     public ConstantFolder(String classFilePath) {
         try {
@@ -47,9 +48,7 @@ public class ConstantFolder {
         }
     }
 
-   
-    // Runs simple constant folding optimization on all methods in the class.
-   
+	// Runs simple constant folding optimization on all methods in the class.
     public void optimize() {
         ClassGen cg = new ClassGen(original);
         ConstantPoolGen cp = cg.getConstantPool();
@@ -60,11 +59,7 @@ public class ConstantFolder {
             InstructionList il = mg.getInstructionList();
             if (il == null) continue;
 
-            boolean changed;
-            do {
-                changed = simpleFolding(il, cp);
-                il.setPositions();
-            } while (changed);
+            runPeepholeOptimisation(il, cp);
 
             mg.setMaxStack();
             mg.setMaxLocals();
@@ -76,6 +71,27 @@ public class ConstantFolder {
         cg.setMajor(50);  
         this.optimized = cg.getJavaClass();
     }
+
+	/*
+	 * Loops over the code making any optimisations until no more can be made
+	 */
+	public void runPeepholeOptimisation(InstructionList il, ConstantPoolGen cp) {
+		// Perform SimpleFolding on constant expressions
+		boolean changed;
+		do {
+			modificationsMade = false;
+
+			// Perform simple folding
+			do {
+				changed = simpleFolding(il, cp);
+			} while (changed);
+
+			// Perform constant folding
+			constantFolding(il, cp);
+			il.setPositions();
+			
+		} while (modificationsMade);
+	}
 
     /**
      * Performs one pass of constant folding over a method's instruction list.
@@ -101,8 +117,7 @@ public class ConstantFolder {
 				Instruction replacement = fold(op, n1, n2, cp);
 				if (replacement == null) continue;
 
-				InstructionHandle newHandle = il.insert(match[0], replacement);
-
+				il.insert(match[0], replacement);
 				try {
 					il.delete(match[0]);
 				} catch (TargetLostException e) {
@@ -218,158 +233,105 @@ public class ConstantFolder {
         return null;
     }
 
+	/*
+	 * Performs constant folding by finding all variables with constant declarations
+	 * that are not reassigned. Then replaces all references to that variable with the
+	 * constant value itself before removing the variable declaration fully.
+	 */
 	private void constantFolding(InstructionList il, ConstantPoolGen cpgen) {
 		Map<Integer, Object> constantVars = new HashMap<>();
-		Map<Integer, InstructionHandle> lastStore = new HashMap<>();
-
+	
+		// Find all variable declarations with constant values
 		for (InstructionHandle ih = il.getStart(); ih != null; ih = ih.getNext()) {
 			Instruction inst = ih.getInstruction();
-
 			if (inst instanceof StoreInstruction) {
 				int varIndex = ((StoreInstruction) inst).getIndex();
-				lastStore.put(varIndex, ih);
-				
-				InstructionHandle prevIh = ih.getPrev();
-				Object constantValue = null;
-
-				if (prevIh != null) {
-					Instruction prevInst = prevIh.getInstruction();
-
-					if (prevInst instanceof ConstantPushInstruction) {
-						constantValue = ((ConstantPushInstruction) prevInst).getValue().intValue();
-					} else if (prevInst instanceof LDC || prevInst instanceof LDC2_W) {
-						int index;
-						if (prevInst instanceof LDC) {
-							index = ((LDC) prevInst).getIndex();
-						} else {
-							index = ((LDC2_W) prevInst).getIndex();
-						}
-						
-						Constant c = cpgen.getConstant(index);
-						if (c instanceof ConstantInteger) {
-							constantValue = ((ConstantInteger) c).getBytes();
-						} else if (c instanceof ConstantLong) {
-							constantValue = ((ConstantLong) c).getBytes();
-						} else if (c instanceof ConstantFloat) {
-							constantValue = ((ConstantFloat) c).getBytes();
-						} else if (c instanceof ConstantDouble) {
-							constantValue = ((ConstantDouble) c).getBytes();
-						}
-					} else if (prevInst instanceof ICONST) {
-						constantValue = ((ICONST) prevInst).getValue().intValue();
-					} else if (prevInst instanceof LCONST) {
-						constantValue = ((LCONST) prevInst).getValue().longValue();
-					} else if (prevInst instanceof FCONST) {
-						constantValue = ((FCONST) prevInst).getValue().floatValue();
-					} else if (prevInst instanceof DCONST) {
-						constantValue = ((DCONST) prevInst).getValue().doubleValue();
-					}
-				}
-
+				Object constantValue = getConstantValue(ih.getPrev(), cpgen);
+	
 				if (constantValue != null) {
-					if (constantVars.containsKey(varIndex)) {
-						constantVars.remove(varIndex);
-					} else {
-						constantVars.put(varIndex, constantValue);
-					}
+					constantVars.compute(varIndex, (k, v) -> v == null ? constantValue : null);
 				} else {
 					constantVars.remove(varIndex);
 				}
 			}
 		}
-
-		// Second pass to remove non-constant declarations
-		Map<Integer, Object> verifiedConstants = new HashMap<>();
-		for (Map.Entry<Integer, Object> entry : constantVars.entrySet()) {
-			int varIndex = entry.getKey();
-			InstructionHandle storeIh = lastStore.get(varIndex);
-			boolean isModified = false;
-			
-			for (InstructionHandle ih = storeIh.getNext(); ih != null; ih = ih.getNext()) {
-				Instruction i = ih.getInstruction();
-				if (i instanceof StoreInstruction && ((StoreInstruction) i).getIndex() == varIndex) {
-					isModified = true;
-					break;
-				}
-			}
-			
-			if (!isModified) {
-				verifiedConstants.put(varIndex, entry.getValue());
-			}
-		}
-
-		// Fold all found constants
-		replaceLoadsWithConstants(il, cpgen, verifiedConstants);
-
-		// Finally, remove initial variable declaration
-		removeInitialDeclarations(il, verifiedConstants);
-	}
-
-	private void replaceLoadsWithConstants(InstructionList il, ConstantPoolGen cpgen, Map<Integer, Object> constantVars) {
+	
 		InstructionFactory factory = new InstructionFactory(cpgen);
-		Map<InstructionHandle, Instruction> newInstructions = new HashMap<>();
-
+		Map<InstructionHandle, Instruction> replacements = new HashMap<>();
+		Set<InstructionHandle> toRemove = new HashSet<>();
+	
+		// Determine bytecode modifications for constant variables
 		for (InstructionHandle ih = il.getStart(); ih != null; ih = ih.getNext()) {
 			Instruction inst = ih.getInstruction();
+	
 			if (inst instanceof LoadInstruction) {
 				int varIndex = ((LoadInstruction) inst).getIndex();
 				if (constantVars.containsKey(varIndex)) {
-					Instruction constInst = factory.createConstant(constantVars.get(varIndex));
-					newInstructions.put(ih, constInst);
+					replacements.put(ih, factory.createConstant(constantVars.get(varIndex)));
+				}
+			} else if (inst instanceof StoreInstruction) {
+				int varIndex = ((StoreInstruction) inst).getIndex();
+				if (constantVars.containsKey(varIndex) && isConstantPush(ih.getPrev())) {
+					toRemove.add(ih.getPrev());
+					toRemove.add(ih);
 				}
 			}
 		}
-
-		for (Map.Entry<InstructionHandle, Instruction> entry : newInstructions.entrySet()) {
-			InstructionHandle handle = entry.getKey();
-			Instruction newInstr = entry.getValue();
-		
+	
+		// Make add determined changes
+		replacements.forEach((handle, newInstr) -> {
 			try {
 				il.insert(handle, newInstr);
 				il.delete(handle);
-			} catch (Exception ignored) {}
-		}
-	}
-
-	private void removeInitialDeclarations(InstructionList il, Map<Integer, Object> verifiedConstants) {
-		Set<InstructionHandle> toRemove = new HashSet<>();
-	
-		for (InstructionHandle ih = il.getStart(); ih != null; ih = ih.getNext()) {
-			Instruction inst = ih.getInstruction();
-	
-			if (inst instanceof StoreInstruction) {
-				int varIndex = ((StoreInstruction) inst).getIndex();
-	
-				// Check if this is a constant variable we've folded
-				if (verifiedConstants.containsKey(varIndex)) {
-					// Look at the previous instruction to see if it's pushing a constant
-					InstructionHandle prevIh = ih.getPrev();
-					if (prevIh != null) {
-						Instruction prevInst = prevIh.getInstruction();
-	
-						// Check if previous instruction is pushing a constant (not a load)
-						if (isConstantPush(prevInst)) {
-							// Mark both the constant push and the store for removal
-							toRemove.add(prevIh);
-							toRemove.add(ih);
-						}
-					}
-				}
+				modificationsMade = true;
+			} catch (Exception e) {
+				e.printStackTrace();
 			}
-		}
+		});
 	
-		// Actually remove the marked instructions
-		for (InstructionHandle ih : toRemove) {
+		toRemove.forEach(handle -> {
 			try {
-				il.delete(ih);
+				il.delete(handle);
+				modificationsMade = true;
 			} catch (TargetLostException e) {
-				// Handle exception if needed
+				e.printStackTrace();
 			}
-		}
+		});
 	}
 	
-	// Helper to check if an instruction pushes a constant
-	private boolean isConstantPush(Instruction inst) {
+	private Object getConstantValue(InstructionHandle prevIh, ConstantPoolGen cpgen) {
+		if (prevIh == null) return null;
+		Instruction prevInst = prevIh.getInstruction();
+	
+		if (prevInst instanceof ConstantPushInstruction) {
+			return ((ConstantPushInstruction) prevInst).getValue();
+		} else if (prevInst instanceof LDC) {
+			return getConstantValue(cpgen.getConstant(((LDC) prevInst).getIndex()));
+		} else if (prevInst instanceof LDC2_W) {
+			return getConstantValue(cpgen.getConstant(((LDC2_W) prevInst).getIndex()));
+		} else if (prevInst instanceof ICONST) {
+			return ((ICONST) prevInst).getValue();
+		} else if (prevInst instanceof LCONST) {
+			return ((LCONST) prevInst).getValue();
+		} else if (prevInst instanceof FCONST) {
+			return ((FCONST) prevInst).getValue();
+		} else if (prevInst instanceof DCONST) {
+			return ((DCONST) prevInst).getValue();
+		}
+		return null;
+	}
+	
+	private Object getConstantValue(Constant c) {
+		if (c instanceof ConstantInteger) return ((ConstantInteger) c).getBytes();
+		if (c instanceof ConstantLong) return ((ConstantLong) c).getBytes();
+		if (c instanceof ConstantFloat) return ((ConstantFloat) c).getBytes();
+		if (c instanceof ConstantDouble) return ((ConstantDouble) c).getBytes();
+		return null;
+	}
+		
+	private boolean isConstantPush(InstructionHandle ih) {
+		if (ih == null) return false;
+		Instruction inst = ih.getInstruction();
 		return inst instanceof ConstantPushInstruction ||
 			   inst instanceof LDC ||
 			   inst instanceof LDC2_W ||
