@@ -3,11 +3,11 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.bcel.classfile.ClassParser;
 import org.apache.bcel.classfile.Constant;
@@ -63,7 +63,7 @@ public class ConstantFolder
 			mg.setMaxLocals();
 			cgen.replaceMethod(method, mg.getMethod());
     }
-        
+		this.gen = cgen;
 		this.optimized = gen.getJavaClass();
 	}
 
@@ -178,45 +178,15 @@ public class ConstantFolder
 			}
 		}
 
-		// Finally, fold all found constants
-		System.out.println("Constant variables: " + verifiedConstants);
-		replaceLoadsWithConstants(il, cpgen, constantVars);
+		// Fold all found constants
+		replaceLoadsWithConstants(il, cpgen, verifiedConstants);
+
+		// Finally, remove initial variable declaration
+		removeInitialDeclarations(il, verifiedConstants);
 	}
-	/*/
+
 	private void replaceLoadsWithConstants(InstructionList il, ConstantPoolGen cpgen, Map<Integer, Object> constantVars) {
-		List<InstructionHandle> toReplace = new ArrayList<>();
 		InstructionFactory factory = new InstructionFactory(cpgen);
-	
-		// Find all load instructions for defined constant variables
-		for (InstructionHandle ih = il.getStart(); ih != null; ih = ih.getNext()) {
-			Instruction inst = ih.getInstruction();
-			if (inst instanceof LoadInstruction) {
-				int varIndex = ((LoadInstruction) inst).getIndex();
-				if (constantVars.containsKey(varIndex)) {
-					toReplace.add(ih);
-				}
-			}
-		}
-		System.out.println("To replace: " + toReplace);
-
-		for (InstructionHandle ih : toReplace) {
-			int varIndex = ((LoadInstruction) ih.getInstruction()).getIndex();
-			Object value = constantVars.get(varIndex);
-	
-			try {
-				Instruction constInst = factory.createConstant(value);
-				System.out.println(constInst);
-			} catch (IllegalArgumentException e) {
-				System.err.println("Could not create constant for value: " + value);
-			}
-		}
-	}
-	*/
-
-	private void replaceLoadsWithConstants(InstructionList il, ConstantPoolGen cpgen, 
-                                     Map<Integer, Object> constantVars) {
-		InstructionFactory factory = new InstructionFactory(cpgen);
-		List<InstructionHandle> replacements = new ArrayList<>();
 		Map<InstructionHandle, Instruction> newInstructions = new HashMap<>();
 
 		for (InstructionHandle ih = il.getStart(); ih != null; ih = ih.getNext()) {
@@ -225,25 +195,68 @@ public class ConstantFolder
 				int varIndex = ((LoadInstruction) inst).getIndex();
 				if (constantVars.containsKey(varIndex)) {
 					Instruction constInst = factory.createConstant(constantVars.get(varIndex));
-					replacements.add(ih);
 					newInstructions.put(ih, constInst);
 				}
 			}
 		}
-		System.out.println(newInstructions);
 
-		for (InstructionHandle oldIh : replacements) {
-			Instruction newInst = newInstructions.get(oldIh);
-			InstructionHandle newIh = il.insert(oldIh, newInst);
-
+		for (Map.Entry<InstructionHandle, Instruction> entry : newInstructions.entrySet()) {
+			InstructionHandle handle = entry.getKey();
+			Instruction newInstr = entry.getValue();
+		
 			try {
-                il.delete(oldIh);
-            } catch (TargetLostException e) {
-                for (InstructionHandle target : e.getTargets()) {
-                    target.setInstruction(InstructionConstants.NOP);
-                }
-            }
+				il.insert(handle, newInstr);
+				il.delete(handle);
+			} catch (Exception ignored) {}
 		}
+	}
+
+	private void removeInitialDeclarations(InstructionList il, Map<Integer, Object> verifiedConstants) {
+		Set<InstructionHandle> toRemove = new HashSet<>();
+	
+		for (InstructionHandle ih = il.getStart(); ih != null; ih = ih.getNext()) {
+			Instruction inst = ih.getInstruction();
+	
+			if (inst instanceof StoreInstruction) {
+				int varIndex = ((StoreInstruction) inst).getIndex();
+	
+				// Check if this is a constant variable we've folded
+				if (verifiedConstants.containsKey(varIndex)) {
+					// Look at the previous instruction to see if it's pushing a constant
+					InstructionHandle prevIh = ih.getPrev();
+					if (prevIh != null) {
+						Instruction prevInst = prevIh.getInstruction();
+	
+						// Check if previous instruction is pushing a constant (not a load)
+						if (isConstantPush(prevInst)) {
+							// Mark both the constant push and the store for removal
+							toRemove.add(prevIh);
+							toRemove.add(ih);
+						}
+					}
+				}
+			}
+		}
+	
+		// Actually remove the marked instructions
+		for (InstructionHandle ih : toRemove) {
+			try {
+				il.delete(ih);
+			} catch (TargetLostException e) {
+				// Handle exception if needed
+			}
+		}
+	}
+	
+	// Helper to check if an instruction pushes a constant
+	private boolean isConstantPush(Instruction inst) {
+		return inst instanceof ConstantPushInstruction ||
+			   inst instanceof LDC ||
+			   inst instanceof LDC2_W ||
+			   inst instanceof ICONST ||
+			   inst instanceof LCONST ||
+			   inst instanceof FCONST ||
+			   inst instanceof DCONST;
 	}
 
 	public void write(String optimisedFilePath)
