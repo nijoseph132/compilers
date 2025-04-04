@@ -23,7 +23,7 @@ import org.apache.bcel.util.InstructionFinder;
 public class ConstantFolder {
     JavaClass original;
     JavaClass optimized;
-	boolean modificationsMade;
+	// boolean modificationsMade;
 
     public ConstantFolder(String classFilePath) {
         try {
@@ -76,26 +76,40 @@ public class ConstantFolder {
 	 * Loops over the code making any optimisations until no more can be made
 	 */
 	public void runPeepholeOptimisation(InstructionList il, ConstantPoolGen cp) {
-		// Perform SimpleFolding on constant expressions
 		boolean changed;
-		do {
-			modificationsMade = false;
+        do {
+            changed = false;
+            // Remove conversion instructions
+            changed |= removeConversionInstructions(il, cp);
+            // Perform constant folding
+            changed |= constantFolding(il, cp);
+            il.setPositions();
+            // Perform simple folding
+            changed |= simpleFolding(il, cp);
+            il.setPositions();
+            il.setPositions();
+        } while (changed);
 
-			// Perform simple folding
-			do {
-				changed = simpleFolding(il, cp);
-			} while (changed);
-
-			// Perform constant folding
-			constantFolding(il, cp);
-
-			// Remove conversion instructions
-			removeConversionInstructions(il, cp);
-
-			il.setPositions();
-			
-		} while (modificationsMade);
 	}
+
+    private void safeDelete(InstructionList il, InstructionHandle handle) {
+        InstructionHandle nextHandle = handle.getNext();
+        try {
+            il.delete(handle);
+        } catch (TargetLostException e) {
+            // TargetLostException raised if handle is targeted by GOTO
+            for (InstructionHandle target : e.getTargets()) {
+                for (InstructionTargeter targeter : target.getTargeters()) targeter.updateTarget(target, nextHandle);
+            }
+        }
+    }
+
+    // private void safeDeleteRange(InstructionList il, InstructionHandle start, InstructionHandle end) {
+    //     while (start != end) {
+
+    //     }
+    // }
+
 
     /**
      * Performs one pass of constant folding over a method's instruction list.
@@ -122,23 +136,27 @@ public class ConstantFolder {
 				if (replacement == null) continue;
 
 				il.insert(match[0], replacement);
-				try {
-					il.delete(match[0]);
-				} catch (TargetLostException e) {
-					e.printStackTrace();
-				}
+                safeDelete(il, match[0]);
+                safeDelete(il, match[1]);
+                safeDelete(il, match[2]);
 
-				try {
-					il.delete(match[1]);
-				} catch (TargetLostException e) {
-					e.printStackTrace();
-				}
+				// try {
+				// 	il.delete(match[0]);
+				// } catch (TargetLostException e) {
+				// 	e.printStackTrace();
+				// }
 
-				try {
-					il.delete(match[2]);
-				} catch (TargetLostException e) {
-					e.printStackTrace();
-				}
+				// try {
+				// 	il.delete(match[1]);
+				// } catch (TargetLostException e) {
+				// 	e.printStackTrace();
+				// }
+
+				// try {
+				// 	il.delete(match[2]);
+				// } catch (TargetLostException e) {
+				// 	e.printStackTrace();
+				// }
 
 				changed = true;
 			} catch (ArithmeticException e) {
@@ -242,7 +260,8 @@ public class ConstantFolder {
 	 * that are not reassigned. Then replaces all references to that variable with the
 	 * constant value itself before removing the variable declaration fully.
 	 */
-	private void constantFolding(InstructionList il, ConstantPoolGen cpgen) {
+	private boolean constantFolding(InstructionList il, ConstantPoolGen cpgen) {
+        boolean modificationsMade = false;
 		Map<Integer, Object> constantVars = new HashMap<>();
 	
 		// Find all variable declarations with constant values
@@ -283,31 +302,42 @@ public class ConstantFolder {
 		}
 	
 		// Make add determined changes
+        if (replacements.size() > 0) modificationsMade = true;
 		replacements.forEach((handle, newInstr) -> {
-			try {
-				il.insert(handle, newInstr);
-				il.delete(handle);
-				modificationsMade = true;
-			} catch (Exception e) {
-				e.printStackTrace();
-			}
+            il.insert(handle, newInstr);
+            safeDelete(il, handle);
+            // modificationsMade = true;
+			// try {
+			// 	il.insert(handle, newInstr);
+			// 	il.delete(handle);
+			// 	modificationsMade = true;
+			// } catch (Exception e) {
+			// 	e.printStackTrace();
+			// }
 		});
-	
+        
+        if (toRemove.size() > 0) modificationsMade = true;
 		toRemove.forEach(handle -> {
-			try {
-				il.delete(handle);
-				modificationsMade = true;
-			} catch (TargetLostException e) {
-				e.printStackTrace();
-			}
+            safeDelete(il, handle);
+        	// modificationsMade = true;
+
+			// try {
+			// 	il.delete(handle);
+			// 	modificationsMade = true;
+			// } catch (TargetLostException e) {
+			// 	e.printStackTrace();
+			// }
 		});
+
+        return modificationsMade;
 	}
 
 	/* 
 	 * Loops over instruction list and removes any type cast operations by replacing them
 	 * with a single intruction to load the resulting value directly as a constant
 	 */
-	private void removeConversionInstructions(InstructionList il, ConstantPoolGen cpgen) {
+	private boolean removeConversionInstructions(InstructionList il, ConstantPoolGen cpgen) {
+        boolean modificationsMade = false;
 		InstructionFactory factory = new InstructionFactory(cpgen);
 	
 		for (InstructionHandle ih = il.getStart(); ih != null; ih = ih.getNext()) {
@@ -329,17 +359,23 @@ public class ConstantFolder {
 				if (convertedValue == null) {
 					continue;
 				}
-				Instruction newLoad = factory.createConstant(convertedValue);			
-				try {
-					il.insert(prevIh, newLoad);
-					il.delete(prevIh, ih);
-					modificationsMade = true;
-				} catch (TargetLostException e) {
-					e.printStackTrace();
-				}
+				Instruction newLoad = factory.createConstant(convertedValue);	
+                il.insert(prevIh, newLoad);
+                safeDelete(il, prevIh);
+                safeDelete(il, ih);
+                modificationsMade = true;
+				// try {
+				// 	il.insert(prevIh, newLoad);
+				// 	il.delete(prevIh, ih);
+				// 	modificationsMade = true;
+				// } catch (TargetLostException e) {
+				// 	e.printStackTrace();
+				// }
 
 			}
 		}
+
+        return modificationsMade;
 	}
 	
 	private Object getConstantValue(InstructionHandle prevIh, ConstantPoolGen cpgen) {
