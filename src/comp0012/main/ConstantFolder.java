@@ -65,6 +65,9 @@ public class ConstantFolder {
             mg.setMaxLocals();
             mg.stripAttributes(true);
             cg.replaceMethod(method, mg.getMethod());
+
+            System.out.println(cg.getClassName() + ": " + method.getName());
+            System.out.println(il);
         }
 
         cg.setConstantPool(cp);
@@ -81,15 +84,14 @@ public class ConstantFolder {
             changed = false;
             // Remove conversion instructions
             changed |= removeConversionInstructions(il, cp);
+            il.setPositions();
             // Perform constant folding
             changed |= constantFolding(il, cp);
             il.setPositions();
             // Perform simple folding
             changed |= simpleFolding(il, cp);
             il.setPositions();
-            il.setPositions();
         } while (changed);
-
 	}
 
     private void safeDelete(InstructionList il, InstructionHandle handle) {
@@ -105,8 +107,9 @@ public class ConstantFolder {
     }
 
     // private void safeDeleteRange(InstructionList il, InstructionHandle start, InstructionHandle end) {
-    //     while (start != end) {
-
+    //     while (start != end.getNext()) {
+    //         safeDelete(il, start);
+    //         start = start.getNext();
     //     }
     // }
 
@@ -139,25 +142,6 @@ public class ConstantFolder {
                 safeDelete(il, match[0]);
                 safeDelete(il, match[1]);
                 safeDelete(il, match[2]);
-
-				// try {
-				// 	il.delete(match[0]);
-				// } catch (TargetLostException e) {
-				// 	e.printStackTrace();
-				// }
-
-				// try {
-				// 	il.delete(match[1]);
-				// } catch (TargetLostException e) {
-				// 	e.printStackTrace();
-				// }
-
-				// try {
-				// 	il.delete(match[2]);
-				// } catch (TargetLostException e) {
-				// 	e.printStackTrace();
-				// }
-
 				changed = true;
 			} catch (ArithmeticException e) {
 				System.out.println("Division by zero skipped.");
@@ -250,6 +234,10 @@ public class ConstantFolder {
         if (op instanceof DREM) {
             if (b.doubleValue() == 0.0d) throw new ArithmeticException();
             return new LDC2_W(cp.addDouble(a.doubleValue() % b.doubleValue()));
+        }
+
+        if (op instanceof IF_ICMPGT) {
+            return new LDC((a.intValue() > b.intValue()) ? cp.addInteger(0) : cp.addInteger(1));
         }
 
         return null;
