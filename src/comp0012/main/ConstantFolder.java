@@ -8,6 +8,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
+import java.util.ArrayList;
 
 import org.apache.bcel.classfile.ClassParser;
 import org.apache.bcel.classfile.Constant;
@@ -59,15 +60,16 @@ public class ConstantFolder {
             InstructionList il = mg.getInstructionList();
             if (il == null) continue;
 
-            runPeepholeOptimisation(il, cp);
+            System.out.println(cg.getClassName() + ": " + method.getName());
+            System.out.println("Original:");
+            System.out.println(il);
+
+            runPeepholeOptimisation(il, cp, mg);
 
             mg.setMaxStack();
             mg.setMaxLocals();
             mg.stripAttributes(true);
             cg.replaceMethod(method, mg.getMethod());
-
-            System.out.println(cg.getClassName() + ": " + method.getName());
-            System.out.println(il);
         }
 
         cg.setConstantPool(cp);
@@ -78,30 +80,43 @@ public class ConstantFolder {
 	/*
 	 * Loops over the code making any optimisations until no more can be made
 	 */
-	public void runPeepholeOptimisation(InstructionList il, ConstantPoolGen cp) {
+	public void runPeepholeOptimisation(InstructionList il, ConstantPoolGen cp, MethodGen mg) {
+        int iterations = 1;
 		boolean changed;
         do {
+            System.out.println("Iteration: " + iterations);
+            ArrayList<InstructionHandle> loopBounds = getLoopBounds(il);
+            System.out.println(loopBounds);
+            
             changed = false;
             // Remove conversion instructions
-            changed |= removeConversionInstructions(il, cp);
-            il.setPositions();
+            changed |= removeConversionInstructions(il, cp, loopBounds);
+            il.setPositions(true);
+            // Perform dynamic folding
+            changed |= dynamicFolding(il, mg, loopBounds);
+            il.setPositions(true);
             // Perform constant folding
-            changed |= constantFolding(il, cp);
-            il.setPositions();
+            changed |= constantFolding(il, cp, loopBounds);
+            il.setPositions(true);
             // Perform simple folding
-            changed |= simpleFolding(il, cp);
-            il.setPositions();
+            changed |= simpleFolding(il, cp, loopBounds);
+            il.setPositions(true);
+            
+            System.out.println(il);
+            ++iterations;
         } while (changed);
+
+        System.out.println("Went through iterations: " + (iterations - 1));
 	}
 
-    private void safeDelete(InstructionList il, InstructionHandle handle) {
-        InstructionHandle nextHandle = handle.getNext();
+    private void safeDelete(InstructionList il, InstructionHandle handle, InstructionHandle newJumpLabel){
+        // InstructionHandle nextHandle = handle.getNext();
         try {
             il.delete(handle);
         } catch (TargetLostException e) {
             // TargetLostException raised if handle is targeted by GOTO
             for (InstructionHandle target : e.getTargets()) {
-                for (InstructionTargeter targeter : target.getTargeters()) targeter.updateTarget(target, nextHandle);
+                for (InstructionTargeter targeter : target.getTargeters()) targeter.updateTarget(target, newJumpLabel);
             }
         }
     }
@@ -113,13 +128,116 @@ public class ConstantFolder {
     //     }
     // }
 
+    private boolean dynamicFolding(InstructionList il, MethodGen mg, ArrayList<InstructionHandle> loopBounds) {
+        boolean modificationsMade = false;
+        int maxLocals = mg.getMaxLocals();
+        HashMap<Integer, Integer> varMap = new HashMap<>();
+        
+        for (InstructionHandle ih = il.getStart(); ih != null;) {
+            InstructionHandle next = ih.getNext();
+            Instruction inst = ih.getInstruction();
+            // System.out.println("instruction list: " + il);
+    
+            if (inst instanceof StoreInstruction store) {
+                int varIndex = store.getIndex();
+                int newVarIndex;
+    
+                if (varMap.containsKey(varIndex)) {
+                    newVarIndex = ++maxLocals;
+                    modificationsMade = true;
+                    // System.out.println("inc maxLocals: " + maxLocals);
+                } else {
+                    newVarIndex = varIndex;
+                }
+                
+                varMap.put(varIndex, newVarIndex);
+                // Replace the instruction with a new instance of the same type
+                // Instruction newStore = createNewStoreInstruction(store, newVarIndex);
+
+                // System.out.println("store, new var index: " + varMap.get(varIndex));
+                // System.out.println("store instruction" + store);
+                // System.out.println("instruction list: " + il);
+
+                // handle.setInstruction(newStore);
+                // il.insert(handle, newStore);
+				// try {
+				// 	il.delete(handle);
+				// } catch (TargetLostException e) {
+				// 	e.printStackTrace();
+				// }
+                store.setIndex(newVarIndex);
+            } else if (inst instanceof LoadInstruction load && !variableChangesInLoop(ih, loopBounds)) {
+                int varIndex = load.getIndex();
+                if (varMap.containsKey(varIndex)) {
+                    int newVarIndex = varMap.get(varIndex);
+    
+                    // Replace the instruction with a new instance of the same type
+                    // Instruction newLoad = createNewLoadInstruction(load, newVarIndex);
+                    
+                    // System.out.println("load: new var index: " + varMap.get(varIndex));
+                    // System.out.println("load instruction" + load);
+
+                    // handle.setInstruction(newLoad); 
+                    // il.insert(handle, newLoad);
+                    // try {
+                    //     il.delete(handle);
+                    // } catch (TargetLostException e) {
+                    //     e.printStackTrace();
+                    // }
+                    load.setIndex(newVarIndex);
+                }
+            }
+            ih = next;
+        }
+        il.setPositions(true);
+        // System.out.println("final maxLocals: " + maxLocals);
+        mg.setMaxLocals(maxLocals); // Ensure the method has enough space for new variables
+        return modificationsMade;
+    }
+
+    private ArrayList<InstructionHandle> getLoopBounds(InstructionList il) {
+        ArrayList<InstructionHandle> arr = new ArrayList<>();
+        for (InstructionHandle ih : il.getInstructionHandles()) {
+            Instruction inst = ih.getInstruction();
+            if (inst instanceof GotoInstruction) {
+                InstructionHandle targetIh = ((GotoInstruction)inst).getTarget();
+                if (targetIh.getPosition() < ih.getPosition()) {
+                    arr.add(targetIh);
+                    arr.add(ih);
+                }
+            }
+        }
+        return arr;
+    }
+
+    private boolean variableChangesInLoop(InstructionHandle ih, ArrayList<InstructionHandle> loopBounds) {
+        int variableIndex = ((LoadInstruction) ih.getInstruction()).getIndex();
+        for (int i = 0; i < loopBounds.size(); i += 2) {
+            InstructionHandle start = loopBounds.get(i);
+            InstructionHandle end = loopBounds.get(i + 1);
+            // find the loop the ih is in
+            if (start.getPosition() <= ih.getPosition() && ih.getPosition() <= end.getPosition()) {
+                // iterate through ihs of the loop
+                for (InstructionHandle current = start; current != end.getNext(); current = current.getNext()) {
+                    // modifications happen with stores and IINC
+                    Instruction currentInstruction = current.getInstruction();
+                    if (currentInstruction instanceof StoreInstruction) {
+                        if (((StoreInstruction) currentInstruction).getIndex() == variableIndex) return true;
+                    } else if (currentInstruction instanceof IINC){
+                        if (((IINC) currentInstruction).getIndex() == variableIndex) return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
 
     /**
      * Performs one pass of constant folding over a method's instruction list.
      * Matches patterns of the form: PushInstruction PushInstruction ArithmeticInstruction.
      * Expected outcome: e.g., 'ldc 2', 'ldc 3', 'iadd' → replaced with 'ldc 5'.
      */
-    private boolean simpleFolding(InstructionList il, ConstantPoolGen cp) {
+    private boolean simpleFolding(InstructionList il, ConstantPoolGen cp, ArrayList<InstructionHandle> loopBounds) {
 		boolean changed = false;
 		InstructionFinder finder = new InstructionFinder(il);
 		String pattern = "PushInstruction PushInstruction ArithmeticInstruction";
@@ -139,9 +257,9 @@ public class ConstantFolder {
 				if (replacement == null) continue;
 
 				il.insert(match[0], replacement);
-                safeDelete(il, match[0]);
-                safeDelete(il, match[1]);
-                safeDelete(il, match[2]);
+                safeDelete(il, match[0], match[0].getPrev());
+                safeDelete(il, match[1], match[0].getPrev());
+                safeDelete(il, match[2], match[0].getPrev());
 				changed = true;
 			} catch (ArithmeticException e) {
 				System.out.println("Division by zero skipped.");
@@ -243,12 +361,12 @@ public class ConstantFolder {
         return null;
     }
 
-	/*
+    /*
 	 * Performs constant folding by finding all variables with constant declarations
 	 * that are not reassigned. Then replaces all references to that variable with the
 	 * constant value itself before removing the variable declaration fully.
 	 */
-	private boolean constantFolding(InstructionList il, ConstantPoolGen cpgen) {
+	private boolean constantFolding(InstructionList il, ConstantPoolGen cpgen, ArrayList<InstructionHandle> loopBounds) {
         boolean modificationsMade = false;
 		Map<Integer, Object> constantVars = new HashMap<>();
 	
@@ -257,6 +375,16 @@ public class ConstantFolder {
 			Instruction inst = ih.getInstruction();
 			if (inst instanceof StoreInstruction) {
 				int varIndex = ((StoreInstruction) inst).getIndex();
+				Object constantValue = getConstantValue(ih.getPrev(), cpgen);
+	
+				if (constantValue != null) {
+					constantVars.compute(varIndex, (k, v) -> v == null ? constantValue : null);
+				} else {
+					constantVars.remove(varIndex);
+				}
+			} 
+            else if (inst instanceof IINC) {
+				int varIndex = ((IINC) inst).getIndex();
 				Object constantValue = getConstantValue(ih.getPrev(), cpgen);
 	
 				if (constantValue != null) {
@@ -275,15 +403,16 @@ public class ConstantFolder {
 		for (InstructionHandle ih = il.getStart(); ih != null; ih = ih.getNext()) {
 			Instruction inst = ih.getInstruction();
 	
-			if (inst instanceof LoadInstruction) {
-				int varIndex = ((LoadInstruction) inst).getIndex();
+			if (inst instanceof LoadInstruction && !variableChangesInLoop(ih, loopBounds)) {
+                int varIndex = ((LoadInstruction) inst).getIndex();
 				if (constantVars.containsKey(varIndex)) {
-					replacements.put(ih, factory.createConstant(constantVars.get(varIndex)));
+                    replacements.put(ih, factory.createConstant(constantVars.get(varIndex)));
+                    System.out.println("Replacing variable: " + varIndex + " with constant: " + constantVars.get(varIndex));
 				}
 			} else if (inst instanceof StoreInstruction) {
 				int varIndex = ((StoreInstruction) inst).getIndex();
-				if (constantVars.containsKey(varIndex) && isConstantPush(ih.getPrev())) {
-					toRemove.add(ih.getPrev());
+				if (constantVars.containsKey(varIndex) && isConstantLoad(ih.getPrev())) {
+                    toRemove.add(ih.getPrev());
 					toRemove.add(ih);
 				}
 			}
@@ -293,38 +422,23 @@ public class ConstantFolder {
         if (replacements.size() > 0) modificationsMade = true;
 		replacements.forEach((handle, newInstr) -> {
             il.insert(handle, newInstr);
-            safeDelete(il, handle);
-            // modificationsMade = true;
-			// try {
-			// 	il.insert(handle, newInstr);
-			// 	il.delete(handle);
-			// 	modificationsMade = true;
-			// } catch (Exception e) {
-			// 	e.printStackTrace();
-			// }
+            safeDelete(il, handle, handle.getPrev());
 		});
         
         if (toRemove.size() > 0) modificationsMade = true;
 		toRemove.forEach(handle -> {
-            safeDelete(il, handle);
-        	// modificationsMade = true;
-
-			// try {
-			// 	il.delete(handle);
-			// 	modificationsMade = true;
-			// } catch (TargetLostException e) {
-			// 	e.printStackTrace();
-			// }
+            safeDelete(il, handle, handle.getNext());
 		});
 
         return modificationsMade;
 	}
 
+
 	/* 
 	 * Loops over instruction list and removes any type cast operations by replacing them
 	 * with a single intruction to load the resulting value directly as a constant
 	 */
-	private boolean removeConversionInstructions(InstructionList il, ConstantPoolGen cpgen) {
+	private boolean removeConversionInstructions(InstructionList il, ConstantPoolGen cpgen, ArrayList<InstructionHandle> loopBounds) {
         boolean modificationsMade = false;
 		InstructionFactory factory = new InstructionFactory(cpgen);
 	
@@ -334,7 +448,7 @@ public class ConstantFolder {
 			if (inst instanceof ConversionInstruction) {
 				InstructionHandle prevIh = ih.getPrev();
 
-				if (prevIh == null || !isConstantPush(prevIh)) {
+				if (prevIh == null || !isConstantLoad(prevIh)) {
 					continue;
 				}
 			
@@ -349,17 +463,9 @@ public class ConstantFolder {
 				}
 				Instruction newLoad = factory.createConstant(convertedValue);	
                 il.insert(prevIh, newLoad);
-                safeDelete(il, prevIh);
-                safeDelete(il, ih);
+                safeDelete(il, prevIh, prevIh.getPrev());
+                safeDelete(il, ih, prevIh.getPrev());
                 modificationsMade = true;
-				// try {
-				// 	il.insert(prevIh, newLoad);
-				// 	il.delete(prevIh, ih);
-				// 	modificationsMade = true;
-				// } catch (TargetLostException e) {
-				// 	e.printStackTrace();
-				// }
-
 			}
 		}
 
@@ -425,7 +531,7 @@ public class ConstantFolder {
 		return null;
 	}
 		
-	private boolean isConstantPush(InstructionHandle ih) {
+	private boolean isConstantLoad(InstructionHandle ih) {
 		if (ih == null) return false;
 		Instruction inst = ih.getInstruction();
 		return inst instanceof ConstantPushInstruction ||
