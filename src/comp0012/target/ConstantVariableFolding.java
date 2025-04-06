@@ -21,6 +21,16 @@ public class ConstantVariableFolding
     }
 
     public boolean methodFour(){
+        // int a = 0;
+        // if (1 > a) {
+        //     a = 1;
+        // } else if (2 > a){
+        //     a = 1;
+        // } else {
+        //     a = 1;
+        // }
+        // a = 2;
+        // return true;
         long x = 4835783423L;
         long y = 400000;
         long z = x + y;
