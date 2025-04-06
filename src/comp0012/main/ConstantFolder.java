@@ -121,13 +121,6 @@ public class ConstantFolder {
         }
     }
 
-    // private void safeDeleteRange(InstructionList il, InstructionHandle start, InstructionHandle end) {
-    //     while (start != end.getNext()) {
-    //         safeDelete(il, start);
-    //         start = start.getNext();
-    //     }
-    // }
-
     private boolean dynamicFolding(InstructionList il, MethodGen mg, ArrayList<InstructionHandle> loopBounds) {
         boolean modificationsMade = false;
         int maxLocals = mg.getMaxLocals();
@@ -136,7 +129,6 @@ public class ConstantFolder {
         for (InstructionHandle ih = il.getStart(); ih != null;) {
             InstructionHandle next = ih.getNext();
             Instruction inst = ih.getInstruction();
-            // System.out.println("instruction list: " + il);
     
             if (inst instanceof StoreInstruction store) {
                 int varIndex = store.getIndex();
@@ -145,45 +137,16 @@ public class ConstantFolder {
                 if (varMap.containsKey(varIndex)) {
                     newVarIndex = ++maxLocals;
                     modificationsMade = true;
-                    // System.out.println("inc maxLocals: " + maxLocals);
                 } else {
                     newVarIndex = varIndex;
                 }
                 
                 varMap.put(varIndex, newVarIndex);
-                // Replace the instruction with a new instance of the same type
-                // Instruction newStore = createNewStoreInstruction(store, newVarIndex);
-
-                // System.out.println("store, new var index: " + varMap.get(varIndex));
-                // System.out.println("store instruction" + store);
-                // System.out.println("instruction list: " + il);
-
-                // handle.setInstruction(newStore);
-                // il.insert(handle, newStore);
-				// try {
-				// 	il.delete(handle);
-				// } catch (TargetLostException e) {
-				// 	e.printStackTrace();
-				// }
                 store.setIndex(newVarIndex);
             } else if (inst instanceof LoadInstruction load && !variableChangesInLoop(ih, loopBounds)) {
                 int varIndex = load.getIndex();
                 if (varMap.containsKey(varIndex)) {
                     int newVarIndex = varMap.get(varIndex);
-    
-                    // Replace the instruction with a new instance of the same type
-                    // Instruction newLoad = createNewLoadInstruction(load, newVarIndex);
-                    
-                    // System.out.println("load: new var index: " + varMap.get(varIndex));
-                    // System.out.println("load instruction" + load);
-
-                    // handle.setInstruction(newLoad); 
-                    // il.insert(handle, newLoad);
-                    // try {
-                    //     il.delete(handle);
-                    // } catch (TargetLostException e) {
-                    //     e.printStackTrace();
-                    // }
                     load.setIndex(newVarIndex);
                 }
             }
@@ -191,7 +154,7 @@ public class ConstantFolder {
         }
         il.setPositions(true);
         // System.out.println("final maxLocals: " + maxLocals);
-        mg.setMaxLocals(maxLocals); // Ensure the method has enough space for new variables
+        mg.setMaxLocals(maxLocals);
         return modificationsMade;
     }
 
@@ -382,8 +345,7 @@ public class ConstantFolder {
 				} else {
 					constantVars.remove(varIndex);
 				}
-			} 
-            else if (inst instanceof IINC) {
+			} else if (inst instanceof IINC) {
 				int varIndex = ((IINC) inst).getIndex();
 				Object constantValue = getConstantValue(ih.getPrev(), cpgen);
 	
