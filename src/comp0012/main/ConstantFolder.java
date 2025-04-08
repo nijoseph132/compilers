@@ -211,8 +211,6 @@ public class ConstantFolder {
                     continue;
                 }
 
-                // "next chunk" is the instructions directly after the IfInstruction up to a GOTO
-                // aka the instructions taken if the ocmparison fails 
                 boolean branchResult = false;
                 if (inst instanceof IFLE || inst instanceof IF_ICMPLE) {
                     branchResult = comparisonResult <= 0;
@@ -237,8 +235,14 @@ public class ConstantFolder {
                     InstructionHandle replacementTarget;
                     
                     InstructionHandle nextGoto = ih;
-                    while (nextGoto != null && !(nextGoto.getInstruction() instanceof GotoInstruction))
+                    while (nextGoto != null) {
+                        // don't use the goto if its a backwards jump in a loop
+                        // otherwise weird things happen and break
+                        if (nextGoto.getInstruction() instanceof GotoInstruction) {
+                            if (!loopBounds.contains(nextGoto)) break;
+                        }
                         nextGoto = nextGoto.getNext();
+                    }
                     // if (nextGoto == null) {
                     //     // if no goto found then ignore the delete
                     //     // i think it shouldn't be reachable though so i'll leave it commented out
