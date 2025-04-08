@@ -229,51 +229,53 @@ public class ConstantFolder {
                     skip = true;
                 }
 
-                if (!skip) {
-                    InstructionHandle deleteStart;
-                    InstructionHandle deleteEnd;
-                    InstructionHandle replacementTarget;
-                    
-                    InstructionHandle nextGoto = ih;
-                    while (nextGoto != null) {
-                        // don't use the goto if its a backwards jump in a loop
-                        // otherwise weird things happen and break
-                        if (nextGoto.getInstruction() instanceof GotoInstruction) {
-                            if (!loopBounds.contains(nextGoto)) break;
-                        }
-                        nextGoto = nextGoto.getNext();
-                    }
-                    // if (nextGoto == null) {
-                    //     // if no goto found then ignore the delete
-                    //     // i think it shouldn't be reachable though so i'll leave it commented out
-                    //     ih = next;
-                    //     continue;
-                    // }
-                    InstructionHandle jumpHandleA = ((IfInstruction)ih.getInstruction()).getTarget();
-                    InstructionHandle jumpHandleB = ((GotoInstruction)nextGoto.getInstruction()).getTarget();
-                    
-                    if (branchResult) {
-                        deleteStart = ih.getNext();
-                        deleteEnd = nextGoto;
-                        replacementTarget = jumpHandleA;
-                    } else {
-                        deleteStart = nextGoto.getNext();
-                        deleteEnd = jumpHandleB.getPrev();
-                        replacementTarget = jumpHandleB;
-                    }
-                    
-                    // i got nullpointer exception when deleting (branchResult == false) blocks
-                    // storing them in a list first worked
-                    modificationsMade = true;
-                    List<InstructionHandle> toDelete = new ArrayList<>();
-                    for (InstructionHandle current = deleteStart; current != null && current != deleteEnd.getNext(); current = current.getNext()) {
-                        toDelete.add(current);
-                    }
-                    for (InstructionHandle h : toDelete) {
-                        safeDelete(il, h, replacementTarget);
-                    }
-                    safeDelete(il, ih, replacementTarget);
+                if (skip) {
+                    ih = next;
+                    continue;
                 }
+                InstructionHandle deleteStart;
+                InstructionHandle deleteEnd;
+                InstructionHandle replacementTarget;
+                
+                InstructionHandle nextGoto = ih;
+                while (nextGoto != null) {
+                    // don't use the goto if its a backwards jump in a loop
+                    // otherwise weird things happen and break
+                    if (nextGoto.getInstruction() instanceof GotoInstruction) {
+                        if (!loopBounds.contains(nextGoto)) break;
+                    }
+                    nextGoto = nextGoto.getNext();
+                }
+                // if (nextGoto == null) {
+                //     // if no goto found then ignore the delete
+                //     // i think it shouldn't be reachable though so i'll leave it commented out
+                //     ih = next;
+                //     continue;
+                // }
+                InstructionHandle jumpHandleA = ((IfInstruction)ih.getInstruction()).getTarget();
+                InstructionHandle jumpHandleB = ((GotoInstruction)nextGoto.getInstruction()).getTarget();
+                
+                if (branchResult) {
+                    deleteStart = ih.getNext();
+                    deleteEnd = nextGoto;
+                    replacementTarget = jumpHandleA;
+                } else {
+                    deleteStart = nextGoto.getNext();
+                    deleteEnd = jumpHandleB.getPrev();
+                    replacementTarget = jumpHandleB;
+                }
+                
+                // i got nullpointer exception when deleting (branchResult == false) blocks
+                // storing them in a list first worked
+                modificationsMade = true;
+                List<InstructionHandle> toDelete = new ArrayList<>();
+                for (InstructionHandle current = deleteStart; current != null && current != deleteEnd.getNext(); current = current.getNext()) {
+                    toDelete.add(current);
+                }
+                for (InstructionHandle h : toDelete) {
+                    safeDelete(il, h, replacementTarget);
+                }
+                safeDelete(il, ih, replacementTarget);
                 // reset to "null" state
                 comparisonResult = 2;
             }
