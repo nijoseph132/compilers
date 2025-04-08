@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.ArrayList;
@@ -86,7 +87,7 @@ public class ConstantFolder {
         do {
             System.out.println("Iteration: " + iterations);
             ArrayList<InstructionHandle> loopBounds = getLoopBounds(il);
-            System.out.println(loopBounds);
+            // System.out.println(loopBounds);
             
             changed = false;
             // Remove conversion instructions
@@ -105,8 +106,18 @@ public class ConstantFolder {
             System.out.println(il);
             ++iterations;
         } while (changed);
-
         System.out.println("Went through iterations: " + (iterations - 1));
+
+        do {
+            ArrayList<InstructionHandle> loopBounds = getLoopBounds(il);
+            changed = false;
+            // Perform dead code deletion
+            changed |= deadBranchDeletion(il, cp, loopBounds);
+            il.setPositions(true);
+        } while (changed);
+
+        System.out.println("After dead code: ");
+        System.out.println(il);
 	}
 
     private void safeDelete(InstructionList il, InstructionHandle handle, InstructionHandle newJumpLabel){
@@ -119,6 +130,152 @@ public class ConstantFolder {
                 for (InstructionTargeter targeter : target.getTargeters()) targeter.updateTarget(target, newJumpLabel);
             }
         }
+    }
+
+    private boolean deadBranchDeletion(InstructionList il, ConstantPoolGen cp, ArrayList<InstructionHandle> loopBounds) {
+        boolean modificationsMade = false;
+        int comparisonResult = 2;
+        for (InstructionHandle ih = il.getStart(); ih != null;) {
+            InstructionHandle next = ih.getNext();
+            Instruction inst = ih.getInstruction();
+            if (inst instanceof LCMP) {
+                // LCMP should be followed by a IfInstruction
+                // find the two previous constants
+                InstructionHandle prevIh = ih.getPrev();
+                InstructionHandle prevPrevIh = (prevIh != null) ? ih.getPrev().getPrev() : null;
+                Long a = (prevIh != null && prevPrevIh != null) ? (Long) getValue(ih.getPrev().getPrev().getInstruction(), cp) : null;
+                Long b = (prevIh != null) ? (Long) getValue(ih.getPrev().getInstruction(), cp) : null;
+                // do nothing if either one is not a constant
+                if (a != null && b != null && isConstantLoad(prevIh) && isConstantLoad(prevPrevIh)) {
+                // if (a != null && b != null && !variableChangesInLoop(ih.getPrev().getPrev(), loopBounds) && !variableChangesInLoop(ih.getPrev(), loopBounds)) {
+                    if (a > b) {
+                        comparisonResult = 1;
+                    } else if (a < b) {
+                        comparisonResult = -1;
+                    } else {
+                        comparisonResult = 0;
+                    }
+                    // can delete the two loads and the LCMP
+                    // System.out.println("deleting: " + ih.getPrev().getPrev() + " replacement: " + next);
+                    // System.out.println("deleting: " + ih.getPrev() + " replacement: " + next);
+                    // System.out.println("deleting: " + ih + " replacement: " + next);
+                    modificationsMade = true;
+                    safeDelete(il, ih.getPrev().getPrev(), next);
+                    safeDelete(il, ih.getPrev(), next);
+                    safeDelete(il, ih, next);
+                }
+            } else if (inst instanceof IfInstruction) {
+                boolean skip = false;
+                // if comparisonResult hasn't been set by a previous LCMP
+                Number a;
+                Number b;
+                if (comparisonResult == 2) {
+                    if (inst instanceof  IFLE || inst instanceof IFLT || inst instanceof IFGE || inst instanceof IFGT || inst instanceof IFEQ || inst instanceof IFNE) {
+                        InstructionHandle prevIh = ih.getPrev();
+                        InstructionHandle prevPrevIh = (prevIh != null) ? ih.getPrev().getPrev() : null;
+                        a = (ih.getPrev() != null) ? getValue(ih.getPrev().getInstruction(), cp) : null;
+                        b = 0;
+                        if (a == null || !isConstantLoad(prevIh) || !isConstantLoad(prevPrevIh)) skip = true;
+                        // if (a == null || variableChangesInLoop(ih.getPrev(), loopBounds)) skip = true;
+                        if (!skip) {
+                            modificationsMade = true;
+                            // System.out.println("deleting: " + ih.getPrev() + " replacement: " + ih);
+                            safeDelete(il, ih.getPrev(), ih);
+                        }
+                    } else {
+                        InstructionHandle prevIh = ih.getPrev();
+                        a = (ih.getPrev() != null && ih.getPrev().getPrev() != null) ? getValue(ih.getPrev().getPrev().getInstruction(), cp) : null;
+                        b = (ih.getPrev() != null) ? getValue(ih.getPrev().getInstruction(), cp) : null;
+                        if (a == null || b == null || !isConstantLoad(prevIh)) skip = true;
+                        // if (a == null || b == null || variableChangesInLoop(ih.getPrev(), loopBounds) || variableChangesInLoop(ih.getPrev().getPrev(), loopBounds)) skip = true;
+                        if (!skip) {
+                            // System.out.println("deleting: " + ih.getPrev().getPrev() + " replacement: " + ih);
+                            // System.out.println("deleting: " + ih.getPrev() + " replacement: " + ih);
+                            modificationsMade = true;
+                            safeDelete(il, ih.getPrev().getPrev(), ih);
+                            safeDelete(il, ih.getPrev(), ih);
+                        }
+                    }
+                    if (!skip) {
+                        if (a.intValue() > b.intValue()) {
+                            comparisonResult = 1;
+                        } else if (a.intValue() < b.intValue()) {
+                            comparisonResult = -1;
+                        } else {
+                            comparisonResult = 0;
+                        }
+                    }
+                }
+                if (skip) {
+                    ih = next;
+                    continue;
+                }
+
+                // "next chunk" is the instructions directly after the IfInstruction up to a GOTO
+                // aka the instructions taken if the ocmparison fails 
+                boolean branchResult = false;
+                if (inst instanceof IFLE || inst instanceof IF_ICMPLE) {
+                    branchResult = comparisonResult <= 0;
+                } else if (inst instanceof IFGE || inst instanceof IF_ICMPGE) {
+                    branchResult = comparisonResult >= 0;
+                } else if (inst instanceof IFEQ || inst instanceof IF_ICMPEQ) {
+                    branchResult = comparisonResult == 0;
+                } else if (inst instanceof IFLT || inst instanceof IF_ICMPLT) {
+                    branchResult = comparisonResult < 0;
+                } else if (inst instanceof IFGT || inst instanceof IF_ICMPGT) {
+                    branchResult = comparisonResult > 0;
+                } else if (inst instanceof IFNE || inst instanceof IF_ICMPNE) {
+                    branchResult = comparisonResult != 0;
+                } else {
+                    // shouldn't reach here, but just in case
+                    skip = true;
+                }
+
+                if (!skip) {
+                    InstructionHandle deleteStart;
+                    InstructionHandle deleteEnd;
+                    InstructionHandle replacementTarget;
+                    
+                    InstructionHandle nextGoto = ih;
+                    while (nextGoto != null && !(nextGoto.getInstruction() instanceof GotoInstruction))
+                        nextGoto = nextGoto.getNext();
+                    // if (nextGoto == null) {
+                    //     // if no goto found then ignore the delete
+                    //     // i think it shouldn't be reachable though so i'll leave it commented out
+                    //     ih = next;
+                    //     continue;
+                    // }
+                    InstructionHandle jumpHandleA = ((IfInstruction)ih.getInstruction()).getTarget();
+                    InstructionHandle jumpHandleB = ((GotoInstruction)nextGoto.getInstruction()).getTarget();
+                    
+                    if (branchResult) {
+                        deleteStart = ih.getNext();
+                        deleteEnd = nextGoto;
+                        replacementTarget = jumpHandleA;
+                    } else {
+                        deleteStart = nextGoto.getNext();
+                        deleteEnd = jumpHandleB.getPrev();
+                        replacementTarget = jumpHandleB;
+                    }
+                    
+                    // i got nullpointer exception when deleting (branchResult == false) blocks
+                    // storing them in a list first worked
+                    modificationsMade = true;
+                    List<InstructionHandle> toDelete = new ArrayList<>();
+                    for (InstructionHandle current = deleteStart; current != null && current != deleteEnd.getNext(); current = current.getNext()) {
+                        toDelete.add(current);
+                    }
+                    for (InstructionHandle h : toDelete) {
+                        safeDelete(il, h, replacementTarget);
+                    }
+                    safeDelete(il, ih, replacementTarget);
+                }
+                // reset to "null" state
+                comparisonResult = 2;
+            }
+            ih = next;
+        }
+        return modificationsMade;
     }
 
     private boolean dynamicFolding(InstructionList il, MethodGen mg, ArrayList<InstructionHandle> loopBounds) {
@@ -174,6 +331,7 @@ public class ConstantFolder {
     }
 
     private boolean variableChangesInLoop(InstructionHandle ih, ArrayList<InstructionHandle> loopBounds) {
+        if (!(ih.getInstruction() instanceof LoadInstruction)) return false;
         int variableIndex = ((LoadInstruction) ih.getInstruction()).getIndex();
         for (int i = 0; i < loopBounds.size(); i += 2) {
             InstructionHandle start = loopBounds.get(i);
