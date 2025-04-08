@@ -35,4 +35,15 @@ public class DynamicVariableFolding {
         b = a + 2;
         return a * b;
     }
+
+    public int methodFive() {
+        int a = 1;
+        int b = 2;
+        if (a < b) {
+            for (int i = 0; i < 3; ++i) System.out.println(b);
+        } else {
+            for (int i = 0; i < 3; ++i) System.out.println(a);
+        }
+        return a;
+    }
 }
