@@ -24,6 +24,28 @@ public class DynamicVariableFolding {
         return i * j;
     }
     
+    // public int methodFour(){
+    //     int a = 1;
+    //     int b = 2;
+
+    //     int result = 1;
+    //     if (a < b) {
+    //         result = a + 3;
+    //     } 
+    //     // else {
+    //     //     result = a + 1;
+    //     // }
+    //     // a = 4;
+
+
+    //     if (a > b) {
+    //         System.out.println("BOOOOOO");
+    //     }
+        
+    //     b = 2 + result;
+    //     return result * b;
+    // }
+
     public int methodFour(){
         int a = 534245;
         int b = a - 1234;

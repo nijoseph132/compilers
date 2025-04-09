@@ -89,6 +89,7 @@ public class ConstantFolder {
         do {
             System.out.println("Iteration: " + iterations);
             ArrayList<InstructionHandle> loopBounds = getLoopBounds(il);
+            ArrayList<InstructionHandle> branchBounds = getBranchBounds(il);
             // System.out.println(loopBounds);
             
             changed = false;
@@ -96,7 +97,7 @@ public class ConstantFolder {
             changed |= removeConversionInstructions(il, cp, loopBounds);
             il.setPositions(true);
             // Perform dynamic folding
-            changed |= dynamicFolding(il, mg, loopBounds);
+            changed |= dynamicFolding(il, mg, loopBounds, branchBounds);
             il.setPositions(true);
             // Perform constant folding
             changed |= constantFolding(il, cp, loopBounds);
@@ -104,21 +105,16 @@ public class ConstantFolder {
             // Perform simple folding
             changed |= simpleFolding(il, cp, loopBounds);
             il.setPositions(true);
+            // Perform dead branch deletion
+            changed |= deadBranchDeletion(il, cp, loopBounds);
+            il.setPositions(true);
+            // Perform dead variable deletion
+            changed |= deadVariableDeletion(il, cp, loopBounds);
+            il.setPositions(true);
             // System.out.println(il);
             ++iterations;
         } while (changed);
         System.out.println("Went through iterations: " + (iterations - 1));
-
-        do {
-            ArrayList<InstructionHandle> loopBounds = getLoopBounds(il);
-            changed = false;
-            // Perform dead branch deletion
-            changed |= deadBranchDeletion(il, cp, loopBounds);
-            // Perform dead variable deletion
-            changed |= deadVariableDeletion(il, cp, loopBounds);
-            il.setPositions(true);
-        } while (changed);
-
         System.out.println("After dead code: " + il.size() + " instructions");
         System.out.println(il);
 	}
@@ -206,7 +202,7 @@ public class ConstantFolder {
                 Long b = (prevIh != null) ? (Long) getValue(ih.getPrev().getInstruction(), cp) : null;
                 // do nothing if either one is not a constant
                 if (a != null && b != null && isConstantLoad(prevIh) && isConstantLoad(prevPrevIh)) {
-                // if (a != null && b != null && !variableChangesInLoop(ih.getPrev().getPrev(), loopBounds) && !variableChangesInLoop(ih.getPrev(), loopBounds)) {
+                // if (a != null && b != null && !variableChangesInBounds(ih.getPrev().getPrev(), loopBounds) && !variableChangesInBounds(ih.getPrev(), loopBounds)) {
                     if (a > b) {
                         comparisonResult = 1;
                     } else if (a < b) {
@@ -235,7 +231,7 @@ public class ConstantFolder {
                         a = (ih.getPrev() != null) ? getValue(ih.getPrev().getInstruction(), cp) : null;
                         b = 0;
                         if (a == null || !isConstantLoad(prevIh) || !isConstantLoad(prevPrevIh)) skip = true;
-                        // if (a == null || variableChangesInLoop(ih.getPrev(), loopBounds)) skip = true;
+                        // if (a == null || variableChangesInBounds(ih.getPrev(), loopBounds)) skip = true;
                         if (!skip) {
                             modificationsMade = true;
                             // System.out.println("deleting: " + ih.getPrev() + " replacement: " + ih);
@@ -246,7 +242,7 @@ public class ConstantFolder {
                         a = (ih.getPrev() != null && ih.getPrev().getPrev() != null) ? getValue(ih.getPrev().getPrev().getInstruction(), cp) : null;
                         b = (ih.getPrev() != null) ? getValue(ih.getPrev().getInstruction(), cp) : null;
                         if (a == null || b == null || !isConstantLoad(prevIh)) skip = true;
-                        // if (a == null || b == null || variableChangesInLoop(ih.getPrev(), loopBounds) || variableChangesInLoop(ih.getPrev().getPrev(), loopBounds)) skip = true;
+                        // if (a == null || b == null || variableChangesInBounds(ih.getPrev(), loopBounds) || variableChangesInBounds(ih.getPrev().getPrev(), loopBounds)) skip = true;
                         if (!skip) {
                             // System.out.println("deleting: " + ih.getPrev().getPrev() + " replacement: " + ih);
                             // System.out.println("deleting: " + ih.getPrev() + " replacement: " + ih);
@@ -295,34 +291,28 @@ public class ConstantFolder {
                 InstructionHandle deleteStart;
                 InstructionHandle deleteEnd;
                 InstructionHandle replacementTarget;
-                
-                InstructionHandle nextGoto = ih;
-                while (nextGoto != null) {
-                    // don't use the goto if its a backwards jump in a loop
-                    // otherwise weird things happen and break
-                    if (nextGoto.getInstruction() instanceof GotoInstruction) {
-                        if (!loopBounds.contains(nextGoto)) break;
-                    }
-                    nextGoto = nextGoto.getNext();
-                }
-                // if (nextGoto == null) {
-                //     // if no goto found then ignore the delete
-                //     // i think it shouldn't be reachable though so i'll leave it commented out
-                //     ih = next;
-                //     continue;
-                // }
-                InstructionHandle jumpHandleA = ((IfInstruction)ih.getInstruction()).getTarget();
-                // nextGoto = jumpHandleA.getPrev();
-                InstructionHandle jumpHandleB = ((GotoInstruction)nextGoto.getInstruction()).getTarget();
-                
+
+                InstructionHandle ifTargetHandle = ((IfInstruction)ih.getInstruction()).getTarget();
                 if (branchResult) {
+                    System.out.println("take jump");
                     deleteStart = ih.getNext();
-                    deleteEnd = nextGoto;
-                    replacementTarget = jumpHandleA;
+                    deleteEnd = ifTargetHandle.getPrev();
+                    replacementTarget = ifTargetHandle;
                 } else {
-                    deleteStart = nextGoto.getNext();
-                    deleteEnd = jumpHandleB.getPrev();
-                    replacementTarget = jumpHandleB;
+                    System.out.println("not take jump");
+                    if (ifTargetHandle.getPrev().getInstruction() instanceof GotoInstruction && !loopBounds.contains(ifTargetHandle.getPrev())) {
+                        // there is a else {}
+                        InstructionHandle goToTargetHandle = ((GotoInstruction) ifTargetHandle.getPrev().getInstruction()).getTarget();
+                        deleteStart = ifTargetHandle.getPrev();
+                        deleteEnd = goToTargetHandle.getPrev();
+                        replacementTarget = goToTargetHandle;
+                    } else {
+                        System.out.println("no else");
+                        // there is no else {}
+                        deleteStart = null;
+                        deleteEnd = null;
+                        replacementTarget = next;
+                    }
                 }
                 
                 // i got nullpointer exception when deleting (branchResult == false) blocks
@@ -344,7 +334,7 @@ public class ConstantFolder {
         return modificationsMade;
     }
 
-    private boolean dynamicFolding(InstructionList il, MethodGen mg, ArrayList<InstructionHandle> loopBounds) {
+    private boolean dynamicFolding(InstructionList il, MethodGen mg, ArrayList<InstructionHandle> loopBounds, ArrayList<InstructionHandle> branchBounds) {
         boolean modificationsMade = false;
         int maxLocals = mg.getMaxLocals();
         HashMap<Integer, Integer> varMap = new HashMap<>();
@@ -353,7 +343,7 @@ public class ConstantFolder {
             InstructionHandle next = ih.getNext();
             Instruction inst = ih.getInstruction();
     
-            if (inst instanceof StoreInstruction store && !variableChangesInLoop(ih, loopBounds)) {
+            if (inst instanceof StoreInstruction store && !variableChangesInBounds(ih, loopBounds) && !variableChangesInBounds(ih, branchBounds)) {
                 int varIndex = store.getIndex();
                 int newVarIndex;
     
@@ -395,7 +385,23 @@ public class ConstantFolder {
         return arr;
     }
 
-    private boolean variableChangesInLoop(InstructionHandle ih, ArrayList<InstructionHandle> loopBounds) {
+    private ArrayList<InstructionHandle> getBranchBounds(InstructionList il) {
+        ArrayList<InstructionHandle> arr = new ArrayList<>();
+        for (InstructionHandle ih : il.getInstructionHandles()) {
+            Instruction inst = ih.getInstruction();
+            if (inst instanceof IfInstruction) {
+                InstructionHandle targetIh = ((IfInstruction)inst).getTarget();
+                if (targetIh.getPrev().getInstruction() instanceof GotoInstruction) {
+                    targetIh = ((GotoInstruction)targetIh.getPrev().getInstruction()).getTarget();
+                }
+                arr.add(ih);
+                arr.add(targetIh);
+            }
+        }
+        return arr;
+    }
+
+    private boolean variableChangesInBounds(InstructionHandle ih, ArrayList<InstructionHandle> bounds) {
         if (!(ih.getInstruction() instanceof LoadInstruction) && !(ih.getInstruction() instanceof StoreInstruction)) return false;
         int variableIndex;
         if (ih.getInstruction() instanceof LoadInstruction) {
@@ -407,9 +413,9 @@ public class ConstantFolder {
             variableIndex = -1;
         }
 
-        for (int i = 0; i < loopBounds.size(); i += 2) {
-            InstructionHandle start = loopBounds.get(i);
-            InstructionHandle end = loopBounds.get(i + 1);
+        for (int i = 0; i < bounds.size(); i += 2) {
+            InstructionHandle start = bounds.get(i);
+            InstructionHandle end = bounds.get(i + 1);
             // find the loop the ih is in
             if (start.getPosition() <= ih.getPosition() && ih.getPosition() <= end.getPosition()) {
                 // iterate through ihs of the loop
@@ -609,7 +615,7 @@ public class ConstantFolder {
                     replacements.put(ih, factory.createConstant(constantVars.get(varIndex)));
                     System.out.println("Replacing variable: " + varIndex + " with constant: " + constantVars.get(varIndex));
 				}
-			} else if (inst instanceof StoreInstruction && !variableChangesInLoop(ih, loopBounds)) {
+			} else if (inst instanceof StoreInstruction && !variableChangesInBounds(ih, loopBounds)) {
 				int varIndex = ((StoreInstruction) inst).getIndex();
 				if (constantVars.containsKey(varIndex) && isConstantLoad(ih.getPrev())) {
                     toRemove.add(ih.getPrev());
