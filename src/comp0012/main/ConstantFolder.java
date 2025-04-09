@@ -64,7 +64,7 @@ public class ConstantFolder {
             if (il == null) continue;
 
             System.out.println(cg.getClassName() + ": " + method.getName());
-            System.out.println("Original:" + il.size() + " instructions");
+            System.out.println("Original: " + il.size() + " instructions");
             System.out.println(il);
 
             runPeepholeOptimisation(il, cp, mg);
@@ -87,33 +87,28 @@ public class ConstantFolder {
         int iterations = 1;
 		boolean changed;
         do {
-            System.out.println("Iteration: " + iterations);
+            // System.out.println("Iteration: " + iterations);
             ArrayList<InstructionHandle> loopBounds = getLoopBounds(il);
-            ArrayList<InstructionHandle> branchBounds = getBranchBounds(il);
+            ArrayList<InstructionHandle> branchBounds = getBranchBounds(il, loopBounds);
             // System.out.println(loopBounds);
+            // System.out.println(branchBounds);
             
             changed = false;
             // Remove conversion instructions
             changed |= removeConversionInstructions(il, cp, loopBounds);
-            il.setPositions(true);
             // Perform dynamic folding
             changed |= dynamicFolding(il, mg, loopBounds, branchBounds);
-            il.setPositions(true);
             // Perform constant folding
-            changed |= constantFolding(il, cp, loopBounds);
-            il.setPositions(true);
+            changed |= constantFolding(il, cp, loopBounds, branchBounds);
             // Perform simple folding
             changed |= simpleFolding(il, cp, loopBounds);
-            il.setPositions(true);
             // Perform dead branch deletion
             changed |= deadBranchDeletion(il, cp, loopBounds);
-            il.setPositions(true);
             // Perform dead variable deletion
             changed |= deadVariableDeletion(il, cp, loopBounds);
-            il.setPositions(true);
-            // System.out.println(il);
             ++iterations;
         } while (changed);
+        il.setPositions(true);
         System.out.println("Went through iterations: " + (iterations - 1));
         System.out.println("After dead code: " + il.size() + " instructions");
         System.out.println(il);
@@ -294,12 +289,13 @@ public class ConstantFolder {
 
                 InstructionHandle ifTargetHandle = ((IfInstruction)ih.getInstruction()).getTarget();
                 if (branchResult) {
-                    System.out.println("take jump");
+                    // System.out.println("take jump");
                     deleteStart = ih.getNext();
                     deleteEnd = ifTargetHandle.getPrev();
                     replacementTarget = ifTargetHandle;
+                    next = ifTargetHandle;
                 } else {
-                    System.out.println("not take jump");
+                    // System.out.println("not take jump");
                     if (ifTargetHandle.getPrev().getInstruction() instanceof GotoInstruction && !loopBounds.contains(ifTargetHandle.getPrev())) {
                         // there is a else {}
                         InstructionHandle goToTargetHandle = ((GotoInstruction) ifTargetHandle.getPrev().getInstruction()).getTarget();
@@ -307,7 +303,7 @@ public class ConstantFolder {
                         deleteEnd = goToTargetHandle.getPrev();
                         replacementTarget = goToTargetHandle;
                     } else {
-                        System.out.println("no else");
+                        // System.out.println("no else");
                         // there is no else {}
                         deleteStart = null;
                         deleteEnd = null;
@@ -363,6 +359,20 @@ public class ConstantFolder {
                     load.setIndex(newVarIndex);
                 }
             }
+            // else if (inst instanceof IINC iinc && !variableChangesInBounds(ih, loopBounds) && !variableChangesInBounds(ih, branchBounds)) {
+            //     int varIndex = iinc.getIndex();
+            //     int newVarIndex;
+    
+            //     if (varMap.containsKey(varIndex)) {
+            //         newVarIndex = ++maxLocals;
+            //         modificationsMade = true;
+            //     } else {
+            //         newVarIndex = varIndex;
+            //     }
+                
+            //     varMap.put(varIndex, newVarIndex);
+            //     iinc.setIndex(newVarIndex);
+            // }
             ih = next;
         }
         // System.out.println("final maxLocals: " + maxLocals);
@@ -385,13 +395,13 @@ public class ConstantFolder {
         return arr;
     }
 
-    private ArrayList<InstructionHandle> getBranchBounds(InstructionList il) {
+    private ArrayList<InstructionHandle> getBranchBounds(InstructionList il, ArrayList<InstructionHandle> loopBounds) {
         ArrayList<InstructionHandle> arr = new ArrayList<>();
         for (InstructionHandle ih : il.getInstructionHandles()) {
             Instruction inst = ih.getInstruction();
             if (inst instanceof IfInstruction) {
                 InstructionHandle targetIh = ((IfInstruction)inst).getTarget();
-                if (targetIh.getPrev().getInstruction() instanceof GotoInstruction) {
+                if (targetIh.getPrev().getInstruction() instanceof GotoInstruction && !loopBounds.contains(targetIh.getPrev())) {
                     targetIh = ((GotoInstruction)targetIh.getPrev().getInstruction()).getTarget();
                 }
                 arr.add(ih);
@@ -402,38 +412,43 @@ public class ConstantFolder {
     }
 
     private boolean variableChangesInBounds(InstructionHandle ih, ArrayList<InstructionHandle> bounds) {
-        if (!(ih.getInstruction() instanceof LoadInstruction) && !(ih.getInstruction() instanceof StoreInstruction)) return false;
+        // if (!(ih.getInstruction() instanceof LoadInstruction) && !(ih.getInstruction() instanceof IINC)) return false;
         int variableIndex;
         if (ih.getInstruction() instanceof LoadInstruction) {
             variableIndex = ((LoadInstruction) ih.getInstruction()).getIndex();
         } else if (ih.getInstruction() instanceof StoreInstruction) {
             variableIndex = ((StoreInstruction) ih.getInstruction()).getIndex();
-        } else {
+        } 
+        // else if (ih.getInstruction() instanceof IINC) { 
+        //     variableIndex = ((IINC) ih.getInstruction()).getIndex();
+        // } 
+        else {
             // shouldnt be reachable
             variableIndex = -1;
         }
 
+        // System.out.println("trying to block: " + variableIndex);
         for (int i = 0; i < bounds.size(); i += 2) {
             InstructionHandle start = bounds.get(i);
             InstructionHandle end = bounds.get(i + 1);
             // find the loop the ih is in
-            if (start.getPosition() <= ih.getPosition() && ih.getPosition() <= end.getPosition()) {
+            // if (start.getPosition() <= ih.getPosition() && ih.getPosition() <= end.getPosition()) {
                 // iterate through ihs of the loop
                 for (InstructionHandle current = start; current != end.getNext(); current = current.getNext()) {
                     // modifications happen with stores and IINC
                     Instruction currentInstruction = current.getInstruction();
                     if (currentInstruction instanceof StoreInstruction) {
                         if (((StoreInstruction) currentInstruction).getIndex() == variableIndex) {
-                            System.out.println(currentInstruction + " blocked: " + ((StoreInstruction) currentInstruction).getIndex());
+                            // System.out.println(currentInstruction + " blocked: " + ((StoreInstruction) currentInstruction).getIndex());
                             return true;  
                         } 
                     } else if (currentInstruction instanceof IINC){
                         if (((IINC) currentInstruction).getIndex() == variableIndex) {
-                            System.out.println(currentInstruction + " blocked: " + ((IINC) currentInstruction).getIndex());
+                            // System.out.println(currentInstruction + " blocked: " + ((IINC) currentInstruction).getIndex());
                             return true;
                         }
                     }
-                }
+                // }
             }
         }
         return false;
@@ -573,7 +588,7 @@ public class ConstantFolder {
 	 * that are not reassigned. Then replaces all references to that variable with the
 	 * constant value itself before removing the variable declaration fully.
 	 */
-	private boolean constantFolding(InstructionList il, ConstantPoolGen cpgen, ArrayList<InstructionHandle> loopBounds) {
+	private boolean constantFolding(InstructionList il, ConstantPoolGen cpgen, ArrayList<InstructionHandle> loopBounds, ArrayList<InstructionHandle> branchBounds) {
         boolean modificationsMade = false;
 		Map<Integer, Object> constantVars = new HashMap<>();
 	
@@ -613,15 +628,32 @@ public class ConstantFolder {
                 int varIndex = ((LoadInstruction) inst).getIndex();
 				if (constantVars.containsKey(varIndex)) {
                     replacements.put(ih, factory.createConstant(constantVars.get(varIndex)));
-                    System.out.println("Replacing variable: " + varIndex + " with constant: " + constantVars.get(varIndex));
+                    // System.out.println("Replacing variable: " + varIndex + " with constant: " + constantVars.get(varIndex));
 				}
-			} else if (inst instanceof StoreInstruction && !variableChangesInBounds(ih, loopBounds)) {
+			} else if (inst instanceof StoreInstruction && !variableChangesInBounds(ih, loopBounds) &&  !variableChangesInBounds(ih, branchBounds)) {
 				int varIndex = ((StoreInstruction) inst).getIndex();
 				if (constantVars.containsKey(varIndex) && isConstantLoad(ih.getPrev())) {
                     toRemove.add(ih.getPrev());
 					toRemove.add(ih);
 				}
-			}
+			} 
+            // else if (inst instanceof IINC) {
+            //     int varIndex = ((IINC) inst).getIndex();
+            //     int increment = ((IINC) inst).getIncrement();
+            //     if (constantVars.containsKey(varIndex)) {
+            //         Object currentVal = constantVars.get(varIndex);
+            //         // Handle int constants (extend to Long if needed)
+            //         if (currentVal instanceof Integer) {
+            //             int newVal = ((Integer) currentVal) + increment;
+            //             constantVars.put(varIndex, newVal);
+            //             // Replace the IINC instruction with a constant load of newVal.
+            //             // This will fold the increment into a constant.
+            //             Instruction newConstantLoad = factory.createConstant(newVal);
+            //             replacements.put(ih, newConstantLoad);
+            //             System.out.println("Replacing IINC for variable: " + varIndex + " with constant: " + newVal);
+            //         }
+            //     }
+            // }
 		}
 	
 		// Make add determined changes
