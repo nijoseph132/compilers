@@ -1,5 +1,7 @@
 package comp0012.main;
 
+import static org.junit.Assert.assertArrayEquals;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -62,7 +64,7 @@ public class ConstantFolder {
             if (il == null) continue;
 
             System.out.println(cg.getClassName() + ": " + method.getName());
-            System.out.println("Original:");
+            System.out.println("Original:" + il.size() + " instructions");
             System.out.println(il);
 
             runPeepholeOptimisation(il, cp, mg);
@@ -102,8 +104,7 @@ public class ConstantFolder {
             // Perform simple folding
             changed |= simpleFolding(il, cp, loopBounds);
             il.setPositions(true);
-            
-            System.out.println(il);
+            // System.out.println(il);
             ++iterations;
         } while (changed);
         System.out.println("Went through iterations: " + (iterations - 1));
@@ -111,12 +112,14 @@ public class ConstantFolder {
         do {
             ArrayList<InstructionHandle> loopBounds = getLoopBounds(il);
             changed = false;
-            // Perform dead code deletion
+            // Perform dead branch deletion
             changed |= deadBranchDeletion(il, cp, loopBounds);
+            // Perform dead variable deletion
+            changed |= deadVariableDeletion(il, cp, loopBounds);
             il.setPositions(true);
         } while (changed);
 
-        System.out.println("After dead code: ");
+        System.out.println("After dead code: " + il.size() + " instructions");
         System.out.println(il);
 	}
 
@@ -130,6 +133,62 @@ public class ConstantFolder {
                 for (InstructionTargeter targeter : target.getTargeters()) targeter.updateTarget(target, newJumpLabel);
             }
         }
+    }
+
+    private boolean deadVariableDeletion(InstructionList il, ConstantPoolGen cp, ArrayList<InstructionHandle> loopBounds) {
+        boolean modificationsMade = false;
+
+        // find which vairables are never used after a store
+        HashMap<Integer, Boolean> isUsed = new HashMap<>();
+        for (InstructionHandle ih = il.getStart(); ih != null;) {
+            InstructionHandle next = ih.getNext();
+            Instruction inst = ih.getInstruction();
+            if (inst instanceof StoreInstruction) {
+                isUsed.put(((StoreInstruction)inst).getIndex(), false);
+            } else if (inst instanceof LoadInstruction) {
+                isUsed.put(((LoadInstruction)inst).getIndex(), true);
+            }
+            ih = next;
+        }
+
+        // delete them and any instructions that "contribute" to it
+        for (InstructionHandle ih = il.getStart(); ih != null;) {
+            InstructionHandle next = ih.getNext();
+            Instruction inst = ih.getInstruction();
+            if (inst instanceof StoreInstruction) {
+                int variableIndex = ((StoreInstruction)inst).getIndex();
+                if (!isUsed.get(variableIndex)) {
+                    // System.out.println("delete this: " + inst + " " + variableIndex);
+                    ArrayList<InstructionHandle> toDelete = new ArrayList<>();
+                    int counter = 1;
+                    toDelete.add(ih);
+                    InstructionHandle currentIh = ih;
+                    while (counter > 0 && currentIh != null) {
+                        currentIh = currentIh.getPrev();
+                        counter--;
+                        Instruction current = currentIh.getInstruction();
+                        if (current instanceof ArithmeticInstruction) {
+                            counter += 2;
+                        } else if (current instanceof InvokeInstruction) {
+                            String signature = ((InvokeInstruction)current).getSignature(cp);
+                            int numArgs = Type.getArgumentTypes(signature).length;
+                            counter += numArgs + 1;
+                            // System.out.println("args: " + numArgs);
+                        }
+                        toDelete.add(currentIh);
+                        // System.out.println("delete this (backtrace): " + current + " " + variableIndex);
+                        // System.out.println(counter);
+                    }
+                    
+                    for (InstructionHandle a : toDelete) {
+                        safeDelete(il, a, next);
+                    }
+                }
+            }
+
+            ih = next;
+        }
+        return modificationsMade;
     }
 
     private boolean deadBranchDeletion(InstructionList il, ConstantPoolGen cp, ArrayList<InstructionHandle> loopBounds) {
@@ -253,6 +312,7 @@ public class ConstantFolder {
                 //     continue;
                 // }
                 InstructionHandle jumpHandleA = ((IfInstruction)ih.getInstruction()).getTarget();
+                // nextGoto = jumpHandleA.getPrev();
                 InstructionHandle jumpHandleB = ((GotoInstruction)nextGoto.getInstruction()).getTarget();
                 
                 if (branchResult) {
@@ -293,7 +353,7 @@ public class ConstantFolder {
             InstructionHandle next = ih.getNext();
             Instruction inst = ih.getInstruction();
     
-            if (inst instanceof StoreInstruction store) {
+            if (inst instanceof StoreInstruction store && !variableChangesInLoop(ih, loopBounds)) {
                 int varIndex = store.getIndex();
                 int newVarIndex;
     
@@ -306,7 +366,7 @@ public class ConstantFolder {
                 
                 varMap.put(varIndex, newVarIndex);
                 store.setIndex(newVarIndex);
-            } else if (inst instanceof LoadInstruction load && !variableChangesInLoop(ih, loopBounds)) {
+            } else if (inst instanceof LoadInstruction load) {
                 int varIndex = load.getIndex();
                 if (varMap.containsKey(varIndex)) {
                     int newVarIndex = varMap.get(varIndex);
@@ -315,7 +375,6 @@ public class ConstantFolder {
             }
             ih = next;
         }
-        il.setPositions(true);
         // System.out.println("final maxLocals: " + maxLocals);
         mg.setMaxLocals(maxLocals);
         return modificationsMade;
@@ -337,8 +396,17 @@ public class ConstantFolder {
     }
 
     private boolean variableChangesInLoop(InstructionHandle ih, ArrayList<InstructionHandle> loopBounds) {
-        if (!(ih.getInstruction() instanceof LoadInstruction)) return false;
-        int variableIndex = ((LoadInstruction) ih.getInstruction()).getIndex();
+        if (!(ih.getInstruction() instanceof LoadInstruction) && !(ih.getInstruction() instanceof StoreInstruction)) return false;
+        int variableIndex;
+        if (ih.getInstruction() instanceof LoadInstruction) {
+            variableIndex = ((LoadInstruction) ih.getInstruction()).getIndex();
+        } else if (ih.getInstruction() instanceof StoreInstruction) {
+            variableIndex = ((StoreInstruction) ih.getInstruction()).getIndex();
+        } else {
+            // shouldnt be reachable
+            variableIndex = -1;
+        }
+
         for (int i = 0; i < loopBounds.size(); i += 2) {
             InstructionHandle start = loopBounds.get(i);
             InstructionHandle end = loopBounds.get(i + 1);
@@ -349,9 +417,15 @@ public class ConstantFolder {
                     // modifications happen with stores and IINC
                     Instruction currentInstruction = current.getInstruction();
                     if (currentInstruction instanceof StoreInstruction) {
-                        if (((StoreInstruction) currentInstruction).getIndex() == variableIndex) return true;
+                        if (((StoreInstruction) currentInstruction).getIndex() == variableIndex) {
+                            System.out.println(currentInstruction + " blocked: " + ((StoreInstruction) currentInstruction).getIndex());
+                            return true;  
+                        } 
                     } else if (currentInstruction instanceof IINC){
-                        if (((IINC) currentInstruction).getIndex() == variableIndex) return true;
+                        if (((IINC) currentInstruction).getIndex() == variableIndex) {
+                            System.out.println(currentInstruction + " blocked: " + ((IINC) currentInstruction).getIndex());
+                            return true;
+                        }
                     }
                 }
             }
@@ -529,13 +603,13 @@ public class ConstantFolder {
 		for (InstructionHandle ih = il.getStart(); ih != null; ih = ih.getNext()) {
 			Instruction inst = ih.getInstruction();
 	
-			if (inst instanceof LoadInstruction && !variableChangesInLoop(ih, loopBounds)) {
+			if (inst instanceof LoadInstruction) {
                 int varIndex = ((LoadInstruction) inst).getIndex();
 				if (constantVars.containsKey(varIndex)) {
                     replacements.put(ih, factory.createConstant(constantVars.get(varIndex)));
                     System.out.println("Replacing variable: " + varIndex + " with constant: " + constantVars.get(varIndex));
 				}
-			} else if (inst instanceof StoreInstruction) {
+			} else if (inst instanceof StoreInstruction && !variableChangesInLoop(ih, loopBounds)) {
 				int varIndex = ((StoreInstruction) inst).getIndex();
 				if (constantVars.containsKey(varIndex) && isConstantLoad(ih.getPrev())) {
                     toRemove.add(ih.getPrev());
