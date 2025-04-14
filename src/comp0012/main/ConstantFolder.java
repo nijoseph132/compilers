@@ -9,8 +9,10 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.UnaryOperator;
 import java.util.ArrayList;
 
+import org.apache.bcel.Constants;
 import org.apache.bcel.classfile.ClassParser;
 import org.apache.bcel.classfile.Constant;
 import org.apache.bcel.classfile.ConstantDouble;
@@ -173,6 +175,7 @@ public class ConstantFolder {
             if (inst instanceof StoreInstruction) {
                 int variableIndex = ((StoreInstruction)inst).getIndex();
                 if (!isUsed.get(variableIndex)) {
+                    boolean skip = false;
                     ArrayList<InstructionHandle> toDelete = new ArrayList<>();
                     int counter = 1;
                     toDelete.add(ih);
@@ -182,17 +185,29 @@ public class ConstantFolder {
                         counter--;
                         Instruction current = currentIh.getInstruction();
                         if (current instanceof ArithmeticInstruction) {
-                            counter += 2;
+                            if (current instanceof INEG || current instanceof LNEG || current instanceof FNEG || current instanceof DNEG) {
+                                counter += 1;
+                            } else {
+                                counter += 2;
+                            }
                         } else if (current instanceof InvokeInstruction) {
                             String signature = ((InvokeInstruction)current).getSignature(cp);
                             int numArgs = Type.getArgumentTypes(signature).length;
                             counter += numArgs + 1;
+                        } else if (current instanceof ConversionInstruction) {
+                            counter += 1;
+                        } else if (current instanceof IINC) {
+                            // annoying
+                            skip = true;
+                            counter = 0;
                         }
                         toDelete.add(currentIh);
                     }
                     
-                    for (InstructionHandle a : toDelete) {
-                        safeDelete(il, a, next);
+                    if (!skip) {
+                        for (InstructionHandle a : toDelete) {
+                            safeDelete(il, a, next);
+                        }
                     }
                 }
             }

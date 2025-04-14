@@ -214,4 +214,23 @@ public class DynamicVariableFolding {
         return result;
     }
 
+    public int deadVariableUnary() {
+        int a = 0;
+        int b = 1;
+        int c = -b * -a;
+        return a;
+    }
+
+    public int negUsed() {
+        int a = 3;
+        int b = -a;
+        return b;
+    }
+
+    public int iincUsed() {
+        int a = 0;
+        a++;
+        return a;
+    }
+
 }
