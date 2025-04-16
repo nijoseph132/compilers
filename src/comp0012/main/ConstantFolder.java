@@ -1,7 +1,5 @@
 package comp0012.main;
 
-import static org.junit.Assert.assertArrayEquals;
-
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -11,8 +9,10 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.UnaryOperator;
 import java.util.ArrayList;
 
+import org.apache.bcel.Constants;
 import org.apache.bcel.classfile.ClassParser;
 import org.apache.bcel.classfile.Constant;
 import org.apache.bcel.classfile.ConstantDouble;
@@ -27,8 +27,14 @@ import org.apache.bcel.util.InstructionFinder;
 public class ConstantFolder {
     JavaClass original;
     JavaClass optimized;
-	// boolean modificationsMade;
 
+    /**
+      * Constructs a ConstantFolder by parsing the given class file.
+      * This constructor reads the .class file located at the specified path,
+      * and initializes the internal representation of the original class.
+      *
+      * @param classFilePath the path to the input .class file
+      */
     public ConstantFolder(String classFilePath) {
         try {
             ClassParser parser = new ClassParser(classFilePath);
@@ -39,10 +45,11 @@ public class ConstantFolder {
     }
 
     /**
-     * Writes the optimized class file to disk.
-     * Expected input: output file path.
-     * Expected outcome: optimized bytecode written to the given path.
-     */
+      * Writes the optimized class file to disk. This method first triggers the optimization process,
+      * then writes the resulting optimized bytecode to the specified file path.
+      *
+      * @param outputPath the destination file path where the optimized class should be saved
+      */
     public void write(String outputPath) {
         this.optimize();
         try (FileOutputStream out = new FileOutputStream(new File(outputPath))) {
@@ -52,7 +59,9 @@ public class ConstantFolder {
         }
     }
 
-	// Runs simple constant folding optimization on all methods in the class.
+    /**
+     * Runs simple constant folding optimization on all methods in the class.
+     */
     public void optimize() {
         ClassGen cg = new ClassGen(original);
         ConstantPoolGen cp = cg.getConstantPool();
@@ -80,18 +89,19 @@ public class ConstantFolder {
         this.optimized = cg.getJavaClass();
     }
 
-	/*
-	 * Loops over the code making any optimisations until no more can be made
-	 */
+    /**
+     * Loops over the code making any optimisations until no more can be made
+     * 
+     * @param il The instruction list of instructions to be optimised
+     * @param cp BCEL constant pool gen
+     * @param mg The method generator associated with the instruction list
+     */
 	public void runPeepholeOptimisation(InstructionList il, ConstantPoolGen cp, MethodGen mg) {
         int iterations = 1;
 		boolean changed;
         do {
-            // System.out.println("Iteration: " + iterations);
             ArrayList<InstructionHandle> loopBounds = getLoopBounds(il);
             ArrayList<InstructionHandle> branchBounds = getBranchBounds(il, loopBounds);
-            // System.out.println(loopBounds);
-            // System.out.println(branchBounds);
             
             changed = false;
             // Remove conversion instructions
@@ -114,6 +124,14 @@ public class ConstantFolder {
         System.out.println(il);
 	}
 
+    /**
+      * Safely deletes an instruction handle from the instruction list, updating any jump targets
+      * that previously pointed to the deleted instruction to point to a new target.
+      *
+      * @param il The instruction list of instructions
+      * @param handle The instruction handle to delete
+      * @param newJumpLabel The instruction handle to redirect any lost jump targets to
+      */
     private void safeDelete(InstructionList il, InstructionHandle handle, InstructionHandle newJumpLabel){
         // InstructionHandle nextHandle = handle.getNext();
         try {
@@ -126,6 +144,14 @@ public class ConstantFolder {
         }
     }
 
+    /**
+      * Removes store instructions to variables that are never subsequently loaded, along with contributing instructions.
+      *
+      * @param il The instruction list of instructions
+      * @param cp BCEL constant pool get
+      * @param loopBounds Instruction handles marking the bounds of loops to avoid incorrect deletions
+      * @return Returns true if any instructions were removed and false otherwise
+      */
     private boolean deadVariableDeletion(InstructionList il, ConstantPoolGen cp, ArrayList<InstructionHandle> loopBounds) {
         boolean modificationsMade = false;
 
@@ -149,7 +175,7 @@ public class ConstantFolder {
             if (inst instanceof StoreInstruction) {
                 int variableIndex = ((StoreInstruction)inst).getIndex();
                 if (!isUsed.get(variableIndex)) {
-                    // System.out.println("delete this: " + inst + " " + variableIndex);
+                    boolean skip = false;
                     ArrayList<InstructionHandle> toDelete = new ArrayList<>();
                     int counter = 1;
                     toDelete.add(ih);
@@ -159,20 +185,29 @@ public class ConstantFolder {
                         counter--;
                         Instruction current = currentIh.getInstruction();
                         if (current instanceof ArithmeticInstruction) {
-                            counter += 2;
+                            if (current instanceof INEG || current instanceof LNEG || current instanceof FNEG || current instanceof DNEG) {
+                                counter += 1;
+                            } else {
+                                counter += 2;
+                            }
                         } else if (current instanceof InvokeInstruction) {
                             String signature = ((InvokeInstruction)current).getSignature(cp);
                             int numArgs = Type.getArgumentTypes(signature).length;
                             counter += numArgs + 1;
-                            // System.out.println("args: " + numArgs);
+                        } else if (current instanceof ConversionInstruction) {
+                            counter += 1;
+                        } else if (current instanceof IINC) {
+                            // annoying
+                            skip = true;
+                            counter = 0;
                         }
                         toDelete.add(currentIh);
-                        // System.out.println("delete this (backtrace): " + current + " " + variableIndex);
-                        // System.out.println(counter);
                     }
                     
-                    for (InstructionHandle a : toDelete) {
-                        safeDelete(il, a, next);
+                    if (!skip) {
+                        for (InstructionHandle a : toDelete) {
+                            safeDelete(il, a, next);
+                        }
                     }
                 }
             }
@@ -182,6 +217,14 @@ public class ConstantFolder {
         return modificationsMade;
     }
 
+    /**
+      * Performs dead branch elimination by evaluating constant comparisons and removing unreachable code.
+      *
+      * @param il The instruction list of instructions
+      * @param cp BCEL constant pool get
+      * @param loopBounds Instruction handles marking the bounds of loops to avoid incorrect deletions
+      * @return Returns true if any branches or instructions were removed and false otherwise
+      */
     private boolean deadBranchDeletion(InstructionList il, ConstantPoolGen cp, ArrayList<InstructionHandle> loopBounds) {
         boolean modificationsMade = false;
         int comparisonResult = 2;
@@ -197,7 +240,6 @@ public class ConstantFolder {
                 Long b = (prevIh != null) ? (Long) getValue(ih.getPrev().getInstruction(), cp) : null;
                 // do nothing if either one is not a constant
                 if (a != null && b != null && isConstantLoad(prevIh) && isConstantLoad(prevPrevIh)) {
-                // if (a != null && b != null && !variableChangesInBounds(ih.getPrev().getPrev(), loopBounds) && !variableChangesInBounds(ih.getPrev(), loopBounds)) {
                     if (a > b) {
                         comparisonResult = 1;
                     } else if (a < b) {
@@ -205,10 +247,8 @@ public class ConstantFolder {
                     } else {
                         comparisonResult = 0;
                     }
+
                     // can delete the two loads and the LCMP
-                    // System.out.println("deleting: " + ih.getPrev().getPrev() + " replacement: " + next);
-                    // System.out.println("deleting: " + ih.getPrev() + " replacement: " + next);
-                    // System.out.println("deleting: " + ih + " replacement: " + next);
                     modificationsMade = true;
                     safeDelete(il, ih.getPrev().getPrev(), next);
                     safeDelete(il, ih.getPrev(), next);
@@ -226,10 +266,8 @@ public class ConstantFolder {
                         a = (ih.getPrev() != null) ? getValue(ih.getPrev().getInstruction(), cp) : null;
                         b = 0;
                         if (a == null || !isConstantLoad(prevIh) || !isConstantLoad(prevPrevIh)) skip = true;
-                        // if (a == null || variableChangesInBounds(ih.getPrev(), loopBounds)) skip = true;
                         if (!skip) {
                             modificationsMade = true;
-                            // System.out.println("deleting: " + ih.getPrev() + " replacement: " + ih);
                             safeDelete(il, ih.getPrev(), ih);
                         }
                     } else {
@@ -237,10 +275,7 @@ public class ConstantFolder {
                         a = (ih.getPrev() != null && ih.getPrev().getPrev() != null) ? getValue(ih.getPrev().getPrev().getInstruction(), cp) : null;
                         b = (ih.getPrev() != null) ? getValue(ih.getPrev().getInstruction(), cp) : null;
                         if (a == null || b == null || !isConstantLoad(prevIh)) skip = true;
-                        // if (a == null || b == null || variableChangesInBounds(ih.getPrev(), loopBounds) || variableChangesInBounds(ih.getPrev().getPrev(), loopBounds)) skip = true;
                         if (!skip) {
-                            // System.out.println("deleting: " + ih.getPrev().getPrev() + " replacement: " + ih);
-                            // System.out.println("deleting: " + ih.getPrev() + " replacement: " + ih);
                             modificationsMade = true;
                             safeDelete(il, ih.getPrev().getPrev(), ih);
                             safeDelete(il, ih.getPrev(), ih);
@@ -289,22 +324,17 @@ public class ConstantFolder {
 
                 InstructionHandle ifTargetHandle = ((IfInstruction)ih.getInstruction()).getTarget();
                 if (branchResult) {
-                    // System.out.println("take jump");
                     deleteStart = ih.getNext();
                     deleteEnd = ifTargetHandle.getPrev();
                     replacementTarget = ifTargetHandle;
                     next = ifTargetHandle;
                 } else {
-                    // System.out.println("not take jump");
                     if (ifTargetHandle.getPrev().getInstruction() instanceof GotoInstruction && !loopBounds.contains(ifTargetHandle.getPrev())) {
-                        // there is a else {}
                         InstructionHandle goToTargetHandle = ((GotoInstruction) ifTargetHandle.getPrev().getInstruction()).getTarget();
                         deleteStart = ifTargetHandle.getPrev();
                         deleteEnd = goToTargetHandle.getPrev();
                         replacementTarget = goToTargetHandle;
                     } else {
-                        // System.out.println("no else");
-                        // there is no else {}
                         deleteStart = null;
                         deleteEnd = null;
                         replacementTarget = next;
@@ -330,6 +360,16 @@ public class ConstantFolder {
         return modificationsMade;
     }
 
+    /**
+      * Performs dynamic variable folding by remapping variable reassignment outside loop and branch bounds
+      * to use single use variables only.
+      *
+      * @param il The instruction list to modify
+      * @param mg The method generator associated with the instruction list
+      * @param loopBounds Instruction handles marking the bounds of any loops
+      * @param branchBounds Instruction handles marking the bounds of any branches
+      * @return Returns true if any modifications were made, otherwise, returns false
+      */
     private boolean dynamicFolding(InstructionList il, MethodGen mg, ArrayList<InstructionHandle> loopBounds, ArrayList<InstructionHandle> branchBounds) {
         boolean modificationsMade = false;
         int maxLocals = mg.getMaxLocals();
@@ -359,27 +399,18 @@ public class ConstantFolder {
                     load.setIndex(newVarIndex);
                 }
             }
-            // else if (inst instanceof IINC iinc && !variableChangesInBounds(ih, loopBounds) && !variableChangesInBounds(ih, branchBounds)) {
-            //     int varIndex = iinc.getIndex();
-            //     int newVarIndex;
-    
-            //     if (varMap.containsKey(varIndex)) {
-            //         newVarIndex = ++maxLocals;
-            //         modificationsMade = true;
-            //     } else {
-            //         newVarIndex = varIndex;
-            //     }
-                
-            //     varMap.put(varIndex, newVarIndex);
-            //     iinc.setIndex(newVarIndex);
-            // }
             ih = next;
         }
-        // System.out.println("final maxLocals: " + maxLocals);
         mg.setMaxLocals(maxLocals);
         return modificationsMade;
     }
 
+    /**
+     * Returns the instruction handles marking the bounds of loops in the given instruction list.
+     *
+     * @param il The instruction list to scan for loop instructions
+     * @return A list of instruction handles representing loop bounds
+     */
     private ArrayList<InstructionHandle> getLoopBounds(InstructionList il) {
         ArrayList<InstructionHandle> arr = new ArrayList<>();
         for (InstructionHandle ih : il.getInstructionHandles()) {
@@ -395,6 +426,13 @@ public class ConstantFolder {
         return arr;
     }
 
+    /**
+     * Returns the instruction handles marking the bounds of conditional branches in the given instruction list.
+     *
+     * @param il The instruction list to scan for branch instructions
+     * @param loopBounds A list of instruction handles marking known loop boundaries
+     * @return The list of instruction handles representing branch bounds
+     */
     private ArrayList<InstructionHandle> getBranchBounds(InstructionList il, ArrayList<InstructionHandle> loopBounds) {
         ArrayList<InstructionHandle> arr = new ArrayList<>();
         for (InstructionHandle ih : il.getInstructionHandles()) {
@@ -411,53 +449,55 @@ public class ConstantFolder {
         return arr;
     }
 
+    /**
+     *  Checks whether a variable changes within the bounds of a list of instructions
+     *
+     * @param ih InstructionHandle for instruction to check
+     * @param bounds ArrayList of instructions to check from
+     * @return Returns true is variable changes otherwise return false
+     */
     private boolean variableChangesInBounds(InstructionHandle ih, ArrayList<InstructionHandle> bounds) {
-        // if (!(ih.getInstruction() instanceof LoadInstruction) && !(ih.getInstruction() instanceof IINC)) return false;
         int variableIndex;
         if (ih.getInstruction() instanceof LoadInstruction) {
             variableIndex = ((LoadInstruction) ih.getInstruction()).getIndex();
         } else if (ih.getInstruction() instanceof StoreInstruction) {
             variableIndex = ((StoreInstruction) ih.getInstruction()).getIndex();
         } 
-        // else if (ih.getInstruction() instanceof IINC) { 
-        //     variableIndex = ((IINC) ih.getInstruction()).getIndex();
-        // } 
         else {
             // shouldnt be reachable
             variableIndex = -1;
         }
 
-        // System.out.println("trying to block: " + variableIndex);
         for (int i = 0; i < bounds.size(); i += 2) {
             InstructionHandle start = bounds.get(i);
             InstructionHandle end = bounds.get(i + 1);
-            // find the loop the ih is in
-            // if (start.getPosition() <= ih.getPosition() && ih.getPosition() <= end.getPosition()) {
-                // iterate through ihs of the loop
-                for (InstructionHandle current = start; current != end.getNext(); current = current.getNext()) {
-                    // modifications happen with stores and IINC
-                    Instruction currentInstruction = current.getInstruction();
-                    if (currentInstruction instanceof StoreInstruction) {
-                        if (((StoreInstruction) currentInstruction).getIndex() == variableIndex) {
-                            // System.out.println(currentInstruction + " blocked: " + ((StoreInstruction) currentInstruction).getIndex());
-                            return true;  
-                        } 
-                    } else if (currentInstruction instanceof IINC){
-                        if (((IINC) currentInstruction).getIndex() == variableIndex) {
-                            // System.out.println(currentInstruction + " blocked: " + ((IINC) currentInstruction).getIndex());
-                            return true;
-                        }
+            // iterate through ihs of the loop
+            for (InstructionHandle current = start; current != end.getNext(); current = current.getNext()) {
+                // modifications happen with stores and IINC
+                Instruction currentInstruction = current.getInstruction();
+                if (currentInstruction instanceof StoreInstruction) {
+                    if (((StoreInstruction) currentInstruction).getIndex() == variableIndex) {
+                        return true;  
+                    } 
+                } else if (currentInstruction instanceof IINC){
+                    if (((IINC) currentInstruction).getIndex() == variableIndex) {
+                        return true;
                     }
-                // }
+                }
             }
         }
         return false;
     }
 
     /**
-     * Performs one pass of constant folding over a method's instruction list.
-     * Matches patterns of the form: PushInstruction PushInstruction ArithmeticInstruction.
-     * Expected outcome: e.g., 'ldc 2', 'ldc 3', 'iadd' → replaced with 'ldc 5'.
+     * Performs one pass of simple folding over a method's instruction list. This is done by
+     * matching patterns of the form: PushInstruction PushInstruction ArithmeticInstruction.
+     * e.g., 'ldc 2', 'ldc 3', 'iadd' → replaced with 'ldc 5'.
+     * 
+     * @param il Bytecode instriction list for the method
+     * @param cpgen BCEL constant pool get
+     * @param loopBounds Signifies the bounds of any loops in the method
+     * @return Returns the instruction list with all simple arithmetic instructions replaced
      */
     private boolean simpleFolding(InstructionList il, ConstantPoolGen cp, ArrayList<InstructionHandle> loopBounds) {
 		boolean changed = false;
@@ -490,12 +530,15 @@ public class ConstantFolder {
 		return changed;
 	}
 
-
-    /**
-     * Extracts constant values from supported instructions (ICONST, BIPUSH, SIPUSH, LDC, LDC2_W).
-     * Expected input: an instruction and the constant pool.
-     * Expected outcome: the Number it pushes to the stack, or null if unsupported.
-     */
+     /**
+      * Extracts constant values from supported instructions (ICONST, BIPUSH, SIPUSH, LDC, LDC2_W).
+      * Expected input: an instruction and the constant pool.
+      * Expected outcome: the Number it pushes to the stack, or null if unsupported.
+      *
+      * @param inst Instruction and the constant pool.
+      * @param cp BCEL constant pool gen
+      * @return Returns the value it pushes to the stack, or null otherwise.
+      */
     private Number getValue(Instruction inst, ConstantPoolGen cp) {
         if (inst instanceof ConstantPushInstruction) {
             return ((ConstantPushInstruction) inst).getValue();
@@ -514,6 +557,12 @@ public class ConstantFolder {
      * and returns the appropriate BCEL instruction to push the result.
      * Supported operations: +, -, *, /, % for int, long, float, double.
      * Expected outcome: new instruction to replace the operation sequence.
+     * 
+     * @param op Arithmetic operation instruction
+     * @param a Operand 1
+     * @param b Operand 2
+     * @param cp BCEL constant pool gen
+     * @return Retuns a single instruction to directly load the result
      */
     private Instruction fold(Instruction op, Number a, Number b, ConstantPoolGen cp) {
         if (op instanceof IADD)
@@ -583,16 +632,22 @@ public class ConstantFolder {
         return null;
     }
 
-    /*
-	 * Performs constant folding by finding all variables with constant declarations
+    /**
+     * Performs constant folding by finding all variables with constant declarations
 	 * that are not reassigned. Then replaces all references to that variable with the
-	 * constant value itself before removing the variable declaration fully.
-	 */
+	 * constant value itself before removing the initial variable declaration fully.
+     * 
+     * @param il Bytecode instriction list for the method
+     * @param cpgen BCEL constant pool get
+     * @param loopBounds Signifies the bounds of any loops in the method
+     * @param branchBounds Signifies the bounds of any if-else branches in the method
+     * @return Returns the instruction list with all constant variables replaced
+     */
 	private boolean constantFolding(InstructionList il, ConstantPoolGen cpgen, ArrayList<InstructionHandle> loopBounds, ArrayList<InstructionHandle> branchBounds) {
         boolean modificationsMade = false;
 		Map<Integer, Object> constantVars = new HashMap<>();
 	
-		// Find all variable declarations with constant values
+		// Find all variable declarations with constant values that are never re-assigned
 		for (InstructionHandle ih = il.getStart(); ih != null; ih = ih.getNext()) {
 			Instruction inst = ih.getInstruction();
 			if (inst instanceof StoreInstruction) {
@@ -628,7 +683,6 @@ public class ConstantFolder {
                 int varIndex = ((LoadInstruction) inst).getIndex();
 				if (constantVars.containsKey(varIndex)) {
                     replacements.put(ih, factory.createConstant(constantVars.get(varIndex)));
-                    // System.out.println("Replacing variable: " + varIndex + " with constant: " + constantVars.get(varIndex));
 				}
 			} else if (inst instanceof StoreInstruction && !variableChangesInBounds(ih, loopBounds) &&  !variableChangesInBounds(ih, branchBounds)) {
 				int varIndex = ((StoreInstruction) inst).getIndex();
@@ -637,32 +691,16 @@ public class ConstantFolder {
 					toRemove.add(ih);
 				}
 			} 
-            // else if (inst instanceof IINC) {
-            //     int varIndex = ((IINC) inst).getIndex();
-            //     int increment = ((IINC) inst).getIncrement();
-            //     if (constantVars.containsKey(varIndex)) {
-            //         Object currentVal = constantVars.get(varIndex);
-            //         // Handle int constants (extend to Long if needed)
-            //         if (currentVal instanceof Integer) {
-            //             int newVal = ((Integer) currentVal) + increment;
-            //             constantVars.put(varIndex, newVal);
-            //             // Replace the IINC instruction with a constant load of newVal.
-            //             // This will fold the increment into a constant.
-            //             Instruction newConstantLoad = factory.createConstant(newVal);
-            //             replacements.put(ih, newConstantLoad);
-            //             System.out.println("Replacing IINC for variable: " + varIndex + " with constant: " + newVal);
-            //         }
-            //     }
-            // }
 		}
 	
-		// Make add determined changes
+		// Replace variable usages with direct constant loads
         if (replacements.size() > 0) modificationsMade = true;
 		replacements.forEach((handle, newInstr) -> {
             il.insert(handle, newInstr);
             safeDelete(il, handle, handle.getPrev());
 		});
         
+        // Remove initial variable declarations
         if (toRemove.size() > 0) modificationsMade = true;
 		toRemove.forEach(handle -> {
             safeDelete(il, handle, handle.getNext());
@@ -671,11 +709,15 @@ public class ConstantFolder {
         return modificationsMade;
 	}
 
-
-	/* 
-	 * Loops over instruction list and removes any type cast operations by replacing them
+    /**
+     * Loops over instruction list and removes any type cast operations by replacing them
 	 * with a single intruction to load the resulting value directly as a constant
-	 */
+     * 
+     * @param il Insturction list for method
+     * @param cpgen BCEL constant pool gen
+     * @param loopBounds Signifies the bounds of any loops in the method
+     * @return Returns the instruction list with all cast instructions replaced
+     */
 	private boolean removeConversionInstructions(InstructionList il, ConstantPoolGen cpgen, ArrayList<InstructionHandle> loopBounds) {
         boolean modificationsMade = false;
 		InstructionFactory factory = new InstructionFactory(cpgen);
@@ -710,6 +752,14 @@ public class ConstantFolder {
         return modificationsMade;
 	}
 	
+    /**
+     * When a constant value is pushed to the stack this method gets the constant
+     * value itself depending the type of the instruction that is pushing it.
+     * 
+     * @param prevIh InstructionHandle for constant load instruction
+     * @param cpgen BCEL constant pool gen
+     * @return Constant value pushed to stack or null otherwise
+     */
 	private Object getConstantValue(InstructionHandle prevIh, ConstantPoolGen cpgen) {
 		if (prevIh == null) return null;
 		Instruction prevInst = prevIh.getInstruction();
@@ -732,6 +782,13 @@ public class ConstantFolder {
 		return null;
 	}
 
+    /**
+     * Get the result of a type cast from a conversion instruction
+     * 
+     * @param value The original value
+     * @param convInst BCEL ConversionInstruction
+     * @return The result of the cast otherise null
+     */
 	private Object convertValue(Object value, ConversionInstruction convInst) {
 		if (convInst instanceof I2D && value instanceof Integer) {
 			return ((Integer) value).doubleValue();
@@ -761,6 +818,12 @@ public class ConstantFolder {
 		return null;
 	}
 
+     /**
+      * Gets the constant value from objects type bcel.classfile.Constant
+      *
+      * @param c Instance of bcel.classfile.Constant
+      * @return Retuns the stored constant value or null otherwise
+      */
 	private Object getConstantValue(Constant c) {
 		if (c instanceof ConstantInteger) return ((ConstantInteger) c).getBytes();
 		if (c instanceof ConstantLong) return ((ConstantLong) c).getBytes();
@@ -768,7 +831,13 @@ public class ConstantFolder {
 		if (c instanceof ConstantDouble) return ((ConstantDouble) c).getBytes();
 		return null;
 	}
-		
+
+    /**
+     * Returns true if an instruction is a type of load instruction
+     *  
+     * @param ih InstructionHandle containing BCEL instruction
+     * @return Returns true if instruction is a constant load otherwise false
+     */
 	private boolean isConstantLoad(InstructionHandle ih) {
 		if (ih == null) return false;
 		Instruction inst = ih.getInstruction();
