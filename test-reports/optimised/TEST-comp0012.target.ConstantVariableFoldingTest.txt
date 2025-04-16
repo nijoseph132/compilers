@@ -1,0 +1,14 @@
+Testsuite: comp0012.target.ConstantVariableFoldingTest
+Tests run: 11, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.033 sec
+
+Testcase: testMethodEight took 0 sec
+Testcase: testMethodSeven took 0 sec
+Testcase: testMethodThree took 0 sec
+Testcase: testMethodFive took 0 sec
+Testcase: testMethodFour took 0 sec
+Testcase: testMethodNine took 0 sec
+Testcase: testMethodOne took 0 sec
+Testcase: testMethodSix took 0 sec
+Testcase: testMethodTen took 0 sec
+Testcase: testMethodTwo took 0 sec
+Testcase: testMethodEleven took 0 sec
