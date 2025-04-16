@@ -1,0 +1,25 @@
+Testsuite: comp0012.target.DynamicVariableFoldingTest
+Tests run: 22, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.045 sec
+
+Testcase: testDeadLocalVariables2 took 0.001 sec
+Testcase: testDeadLocalVariables3 took 0 sec
+Testcase: testDeadLocalVariables4 took 0 sec
+Testcase: testMethodThree took 0 sec
+Testcase: testMethodFour took 0.001 sec
+Testcase: testLoops took 0.001 sec
+Testcase: testDeadVariableUnary took 0 sec
+Testcase: testNegativeIfElseBlock took 0 sec
+Testcase: testMethodOne took 0 sec
+Testcase: testMethodTwoReturn took 0.001 sec
+Testcase: testElseIfBlock took 0 sec
+Testcase: testDeadLocalVariables took 0.001 sec
+Testcase: testIincUsed took 0.001 sec
+Testcase: testIfBlock took 0 sec
+Testcase: testNegativeIfBlock took 0 sec
+Testcase: testNegUsed took 0.001 sec
+Testcase: testLoops2 took 0 sec
+Testcase: testLoops3 took 0 sec
+Testcase: testLoops4 took 0 sec
+Testcase: testNestedIfBlock took 0.001 sec
+Testcase: testMethodTwoOut took 0.001 sec
+Testcase: testIfElseBlock took 0 sec
