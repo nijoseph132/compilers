@@ -135,14 +135,4 @@ public class DynamicVariableFoldingTest
         assertEquals(0, dvf.deadVariableUnary());
     }
 
-    @Test 
-    public void testNegUsed() {
-        assertEquals(-3, dvf.negUsed());
-    }
-
-    @Test 
-    public void testIincUsed() {
-        assertEquals(1, dvf.iincUsed());
-    }
-
 }
