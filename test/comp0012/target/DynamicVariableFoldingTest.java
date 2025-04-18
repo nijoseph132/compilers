@@ -135,4 +135,24 @@ public class DynamicVariableFoldingTest
         assertEquals(0, dvf.deadVariableUnary());
     }
 
+    @Test 
+    public void testAndTrue() {
+        assertEquals(true, dvf.andTrue());
+    }
+
+    @Test 
+    public void testAndFalse() {
+        assertEquals(false, dvf.andFalse());
+    }
+
+    @Test 
+    public void testOrTrue() {
+        assertEquals(true, dvf.orTrue());
+    }
+
+    @Test 
+    public void testOrFalse() {
+        assertEquals(false, dvf.orFalse());
+    }
+
 }
