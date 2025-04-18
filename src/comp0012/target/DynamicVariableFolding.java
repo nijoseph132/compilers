@@ -221,16 +221,40 @@ public class DynamicVariableFolding {
         return a;
     }
 
-    public int negUsed() {
-        int a = 3;
-        int b = -a;
-        return b;
+    public boolean andTrue() {
+        int a = 0;
+        int b = 1;
+        int c = 2;
+        int d = 3;
+
+        return (a < b && c < d);
     }
 
-    public int iincUsed() {
+    public boolean andFalse() {
         int a = 0;
-        a++;
-        return a;
+        int b = 1;
+        int c = 2;
+        int d = 3;
+
+        return (a > b && c < d);
+    }
+
+    public boolean orTrue() {
+        int a = 0;
+        int b = 1;
+        int c = 2;
+        int d = 3;
+
+        return (a > b || c < d);
+    }
+
+    public boolean orFalse() {
+        int a = 0;
+        int b = 1;
+        int c = 2;
+        int d = 3;
+
+        return (a > b || c > d);
     }
 
 }

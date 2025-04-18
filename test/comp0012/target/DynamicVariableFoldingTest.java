@@ -136,13 +136,23 @@ public class DynamicVariableFoldingTest
     }
 
     @Test 
-    public void testNegUsed() {
-        assertEquals(-3, dvf.negUsed());
+    public void testAndTrue() {
+        assertEquals(true, dvf.andTrue());
     }
 
     @Test 
-    public void testIincUsed() {
-        assertEquals(1, dvf.iincUsed());
+    public void testAndFalse() {
+        assertEquals(false, dvf.andFalse());
+    }
+
+    @Test 
+    public void testOrTrue() {
+        assertEquals(true, dvf.orTrue());
+    }
+
+    @Test 
+    public void testOrFalse() {
+        assertEquals(false, dvf.orFalse());
     }
 
 }
